@@ -30,7 +30,7 @@ PLUGIN = "baton"
 TOOLSET = "baton"
 TOOL_NAMES = ("baton_receive", "baton_check", "baton_return")
 HOOK_NAMES = ("pre_verify",)
-SETTING_KEYS = ("role", "remote_git", "workspace", "allowed_checks", "check_timeout_s", "peers")
+SETTING_KEYS = ("role", "remote_git", "workspace", "allowed_checks", "check_timeout_s", "sandbox", "peers")
 ROLES = ("local", "remote", "both")
 SKILLS = {
     "baton-protocol": "Use when a run hands you a baton. Work, check, return.",
@@ -97,9 +97,11 @@ def hermes_home() -> Path:
     try:
         from hermes_constants import get_hermes_home
         return Path(get_hermes_home())
-    except ImportError:
+    except ImportError:  # outside Hermes (plain pytest): only an explicit HERMES_HOME is accepted
         env = os.environ.get("HERMES_HOME", "").strip()
-        return Path(env) if env else Path.home() / ".hermes"
+        if not env:
+            raise BatonError("hermes_missing", "Hermes is not importable and HERMES_HOME is not set")
+        return Path(env)
 
 
 def data_dir() -> Path:
@@ -618,8 +620,9 @@ def _status_line(row: dict) -> str:
 
 def _check_lines(chk: dict) -> list[str]:
     verdict = "GREEN" if chk.get("passed") else ("TIMED OUT" if chk.get("timed_out") else "RED")
+    sandbox = f", sandbox {chk['sandbox']}" if chk.get("sandbox") else ""
     lines = [f"check {' '.join(chk.get('argv') or [])}: {verdict} (exit {chk.get('exit')}, "
-             f"log sha256 {str(chk.get('log_sha256'))[:16]}...)"]
+             f"log sha256 {str(chk.get('log_sha256'))[:16]}...{sandbox})"]
     tail = [ln for ln in str(chk.get("tail") or "").splitlines() if ln.strip()][-6:]
     lines.extend(f"  | {ln[:160]}" for ln in tail)
     return lines

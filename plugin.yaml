@@ -41,11 +41,16 @@ config_schema:
       - [make, test]
       - [cargo, test]
       - [go, test]
-    description: "Remote only: argv prefixes a baton's done_when check must start with (owned by the remote)."
+    description: "Remote only: argv a baton's check must match, followed only by safe flags and relative paths inside the worktree (owned by the remote)."
   check_timeout_s:
     type: int
     default: 900
     description: "Remote only: upper bound in seconds for one baton_check run."
+  sandbox:
+    type: str
+    default: auto
+    choices: [auto, off]
+    description: "Remote only: auto runs the check under bubblewrap when it works here (hides the Hermes home, kills every check process at the end); off never does."
   peers:
     type: dict
     default: {}

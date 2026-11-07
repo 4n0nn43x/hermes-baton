@@ -83,6 +83,8 @@ def _schema_problems(m: dict, baton_id: str | None) -> list[str]:
         problems.append("done_when.argv must be a non-empty list of strings")
     elif not isinstance(dw.get("timeout_s"), int) or dw["timeout_s"] <= 0:
         problems.append("done_when.timeout_s must be a positive integer")
+    elif not isinstance(dw.get("expect_exit"), int) or isinstance(dw["expect_exit"], bool):
+        problems.append("done_when.expect_exit must be an integer")
     return problems
 
 

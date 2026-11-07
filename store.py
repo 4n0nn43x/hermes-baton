@@ -107,7 +107,10 @@ class BatonStore:
             return None
         if not path.exists():
             return None
-        return BatonRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        try:
+            return BatonRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        except (ValueError, TypeError) as exc:
+            raise BatonError("registry_corrupt", f"unreadable baton record {path}: {exc}") from None
 
     def require(self, baton_id: str) -> BatonRecord:
         record = self.get(baton_id)
@@ -142,7 +145,15 @@ class BatonStore:
     # remote records (plain dicts)
     def get_remote(self, baton_id: str) -> dict | None:
         path = self._path("remote", baton_id)
-        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise BatonError("registry_corrupt", f"unreadable remote baton record {path}: {exc}") from None
+        if not isinstance(data, dict):
+            raise BatonError("registry_corrupt", f"remote baton record {path} is not an object")
+        return data
 
     def save_remote(self, baton_id: str, data: dict) -> dict:
         data["updated_at"] = now_rfc3339()

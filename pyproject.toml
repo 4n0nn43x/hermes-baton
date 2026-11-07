@@ -6,9 +6,6 @@ requires-python = ">=3.11"
 license = "MIT"
 dependencies = []
 
-[project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "aiohttp>=3.9,<4"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"

@@ -14,6 +14,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -243,7 +244,7 @@ def check_env(home: Path | str) -> dict[str, str]:
     """Minimal env for a check: no provider keys, no HERMES_*, HOME = `home` (an empty throwaway dir;
     XDG_* are unset, so their defaults land in it too)."""
     env = {k: os.environ[k] for k in ENV_ALLOWLIST if k in os.environ}
-    env.setdefault("PATH", os.defpath)
+    env["PATH"] = user_path(env.get("PATH") or os.defpath)
     for var, sub in TOOLCHAIN_DIRS.items():
         value = os.environ.get(var) or (str(Path.home() / sub) if (Path.home() / sub).is_dir() else "")
         if value:
@@ -252,8 +253,29 @@ def check_env(home: Path | str) -> dict[str, str]:
     return env
 
 
+def user_path(path: str) -> str:
+    """`path` with Hermes's own entries moved last: its Python (venv and base interpreter) and
+    anything inside a Hermes home. A Hermes process puts its tool store first (pm.install.activate),
+    so `python` would be Hermes's interpreter instead of the project's; the terminal tool reorders
+    the same way (pm.user_facing)."""
+    own = [*hermes_dirs(), Path(os.path.abspath(sys.executable)).parent.resolve(),
+           Path(sys.base_prefix).resolve() / "bin"]
+
+    def hermes_owned(entry: str) -> bool:
+        try:
+            resolved = Path(entry).resolve()
+        except (OSError, RuntimeError):
+            return False
+        return any(resolved.is_relative_to(d) for d in own)
+
+    entries = [e for e in path.split(os.pathsep) if e]
+    return os.pathsep.join([e for e in entries if not hermes_owned(e)] + [e for e in entries if hermes_owned(e)])
+
+
 def hermes_dirs() -> list[Path]:
-    """The Hermes homes a check must not see: ~/.hermes and $HERMES_HOME (when they exist)."""
+    """The Hermes homes a check must not see: ~/.hermes and $HERMES_HOME (when they exist).
+    This is a deny-list for the sandbox and PATH ordering only; Baton never reads or writes data here
+    (its own data lives under get_hermes_home() via the plugin entry point)."""
     dirs = {Path.home() / ".hermes", Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")}
     return sorted(d.resolve() for d in dirs if d.is_dir())
 

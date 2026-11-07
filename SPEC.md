@@ -139,8 +139,24 @@ resolved ONLY in `__init__.py`).
 
 Settings (read at call time): `role` (`local`, `remote`, `both`; default `both`), `remote_git` (URL or
 path of the shared bare repo), `workspace` (dir for worktrees; default `<plugin data>/work`),
-`allowed_checks` (list of argv prefixes; default `[["python","-m","pytest"],["pytest"],["npm","test"],["make","test"],["cargo","test"],["go","test"]]`),
-`check_timeout_s` (900).
+`allowed_checks` (argv a baton's check must match; default `[["python","-m","pytest"],["pytest"],["npm","test"],["make","test"],["cargo","test"],["go","test"]]`),
+`check_timeout_s` (900), `sandbox` (`auto` or `off`; default `auto`).
+
+Check policy (the remote owns it, the manifest cannot widen it): `done_when.argv` must equal an
+`allowed_checks` entry followed only by safe flags (`-q -qq -v -vv -x -s --quiet --verbose --exitfirst`,
+and `-p no:<plugin>` pairs) and relative paths that stay inside the worktree once symlinks are resolved;
+anything else (`--basetemp=/x`, `-c file`, `-p plugin`, an absolute path, `make --eval=...`) is refused
+with `check_not_allowed` before anything runs. The check gets a fresh, empty, throwaway HOME (XDG_*
+unset so their defaults land in it), no HERMES_* variable and no provider key. With `sandbox: auto`
+and a working bubblewrap, the check runs under `bwrap`: the Hermes homes (`~/.hermes`, `$HERMES_HOME`)
+are masked by empty tmpfs, the workspace stays bound, and every process of the check dies with it
+(own pid namespace); without bubblewrap (or with `sandbox: off`) it runs unsandboxed. The check result
+says which in its `sandbox` field (`bwrap`, or `off: <reason>`).
+
+Refusals with their own codes: `unsafe_snapshot` when the snapshot holds symlinks that resolve outside
+the repository (refused at send by the capture, and again at receive, which removes the worktree);
+`baton_cancelled` when receive, check or return runs on a baton whose sender cancelled it (the
+CANCELLED status is never overwritten).
 
 Tools (always registered; `check_fn` hides them when role is `local`):
 - `baton_receive(id)`: fetch `refs/baton/<id>/in` from `remote_git` into a cache clone under the

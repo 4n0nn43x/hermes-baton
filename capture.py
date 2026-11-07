@@ -43,6 +43,24 @@ def _has_submodules(root: Path, index_env: Mapping[str, str] | None = None) -> b
     return any(line.startswith("160000 ") for line in staged.splitlines())
 
 
+def _escaping_links(root: Path, tree: str) -> list[str]:
+    """Symlinks of `tree` that resolve outside the repository (absolute, `..`, chains, loops): the
+    remote refuses them anyway (unsafe_snapshot), so refuse before anything is sent."""
+    raw = gitutil.run_git(["ls-tree", "-r", "-z", tree], root).stdout.decode("utf-8", "replace")
+    top = root.resolve()
+    out = []
+    for entry in raw.split("\0"):
+        if entry.startswith("120000 "):
+            path = entry.split("\t", 1)[1]
+            try:
+                inside = (root / path).resolve().is_relative_to(top)
+            except (OSError, RuntimeError):  # symlink loop
+                inside = False
+            if not inside:
+                out.append(path)
+    return out
+
+
 def ghost_commit(repo: Path | str, baton_id: str = "", timeout: float = 300) -> CaptureResult:
     root = repo_root(repo)
     if _has_submodules(root):
@@ -60,6 +78,10 @@ def ghost_commit(repo: Path | str, baton_id: str = "", timeout: float = 300) -> 
         if _has_submodules(root, env):
             raise BatonError("submodules_unsupported", "a nested git repository would be captured as a submodule")
         tree = gitutil.out(["write-tree"], root, env=env)
+    escaping = _escaping_links(root, tree)
+    if escaping:
+        raise BatonError("unsafe_snapshot", "symlinks point outside the repository: " + ", ".join(escaping[:5]),
+                         {"symlinks": escaping})
     message = f"baton: snapshot {baton_id}".rstrip()
     args = ["commit-tree", "--no-gpg-sign", tree, "-m", message] + (["-p", head] if head else [])
     project_commit = gitutil.out(args, root)

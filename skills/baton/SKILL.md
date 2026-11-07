@@ -32,6 +32,10 @@ to close the laptop while a long fix runs. Do not use it for quick edits you can
 - Uncommitted changes and untracked (not ignored) files travel; ignored files do not.
 - A secret in the outgoing changes **blocks** the pass (it is never masked). Ask the user to remove
   it or add the file to `.gitignore`; there is no override.
+- Symlinks that point outside the repository also block the pass (`unsafe_snapshot`).
+- The check must be one the remote allows (by default `python -m pytest`, `pytest`, `npm test`,
+  `make test`, `cargo test`, `go test`), followed only by safe flags such as `-q` or `-x` and relative
+  paths inside the repo. The remote refuses anything else (`check_not_allowed`).
 - The peer is the one registered with `hermes peer add`; the key is never printed or stored.
 - After landing: `git log baton/<id>`, then merge or cherry-pick as the user prefers. Baton never
   merges by itself.
