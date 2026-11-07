@@ -5,14 +5,48 @@ version: "0.1.0"
 author: 4n0nn43x
 description: >
   Hand your session and repository to your remote Hermes agent (Hermes Cloud, a VPS or Docker), close
-  the laptop, and land a tested branch the next morning without touching your working tree.
+  the laptop, and land a tested branch the next morning without touching your working tree. Code travels
+  by git, the order by the Runs API, state by git refs; the remote cannot return "verified" until the
+  agreed check is green.
 requires_hermes: ">=0.23.0"
 homepage: https://github.com/4n0nn43x/hermes-baton
 license: MIT
+tags: [coding, remote, git, handoff, runs-api]
 provides_tools:
   - baton_receive
   - baton_check
   - baton_return
 provides_hooks:
   - pre_verify
-# config_schema and final fields are completed during integration (SPEC sections 7 and 8).
+config_schema:
+  role:
+    type: str
+    default: both
+    choices: [local, remote, both]
+    description: "local passes batons, remote works on them (tools + pre_verify), both does both."
+  remote_git:
+    type: str
+    default: ""
+    description: "URL or path of the shared bare git repository both sides can push to and fetch from."
+  workspace:
+    type: str
+    default: ""
+    description: "Remote only: directory for the cache repo and throwaway worktrees (default <plugin data>/work)."
+  allowed_checks:
+    type: list
+    default:
+      - [python, -m, pytest]
+      - [pytest]
+      - [npm, test]
+      - [make, test]
+      - [cargo, test]
+      - [go, test]
+    description: "Remote only: argv prefixes a baton's done_when check must start with (owned by the remote)."
+  check_timeout_s:
+    type: int
+    default: 900
+    description: "Remote only: upper bound in seconds for one baton_check run."
+  peers:
+    type: dict
+    default: {}
+    description: "Fallback peers when not registered with `hermes peer add`: {name: {url, key_env}}. Keys stay in .env."
