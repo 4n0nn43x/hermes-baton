@@ -1,0 +1,15 @@
+[project]
+name = "hermes-baton"
+version = "0.1.0"
+description = "Baton for Hermes Agent: hand your session and repo to your remote Hermes, get a tested branch back"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "aiohttp>=3.9,<4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+asyncio_mode = "auto"
