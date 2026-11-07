@@ -20,6 +20,11 @@ FORBIDDEN_GLOBS = ("*.pem", "*.p12")
 ALLOWED_ENV_NAMES = (".env.example", ".env.sample", ".env.template")
 PLACEHOLDER_WORDS = ("example", "placeholder", "your", "dummy", "changeme", "xxxx", "redacted", "fake", "test")
 
+# Zero-width match at the start of each [\w.-] run: group 1 is the whole name, group 2 the quoted value.
+# Each attempt is bounded by the run it starts on, so the scan is linear in the text; the former
+# `[\w.-]*(?:api|secret|token|password)[\w.-]*...` backtracked quadratically (ReDoS).
+GENERIC = re.compile(r"(?<![\w.-])(?=([\w.-]+)[\"']?\s*[:=]\s*[\"']([^\"'\s]{16,})[\"'])")
+GENERIC_NAME = re.compile(r"(?i)api|secret|token|password")
 RULES: list[tuple[str, re.Pattern]] = [
     ("private_key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")),
     ("api_key_sk", re.compile(r"\bsk-(?:ant-(?:api\d\d-)?|or-v1-|proj-|svcacct-)?[A-Za-z0-9_-]{20,}")),
@@ -27,8 +32,7 @@ RULES: list[tuple[str, re.Pattern]] = [
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("slack_token", re.compile(r"\bxox[abp]-[A-Za-z0-9-]{10,}")),
     ("telegram_bot_token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")),
-    ("generic_secret", re.compile(
-        r"(?i)[\w.-]*(?:api|secret|token|password)[\w.-]*[\"']?\s*[:=]\s*[\"']([^\"'\s]{16,})[\"']")),
+    ("generic_secret", GENERIC),
 ]
 GENERIC_MIN_ENTROPY = 3.5
 
@@ -81,17 +85,31 @@ def forbidden_name(path: str) -> str | None:
 def iter_matches(text: str):
     """Yield (rule, start, end, secret) for every real-looking secret in `text`."""
     for rule, pattern in RULES:
-        for m in pattern.finditer(text):
-            if rule == "generic_secret":
-                secret = m.group(1)
+        if rule == "generic_secret":
+            for start, end in generic_candidates(text):
+                secret = text[start:end]
                 if entropy(secret) < GENERIC_MIN_ENTROPY or _is_placeholder(secret):
                     continue
-                yield rule, m.start(1), m.end(1), secret
-            else:
-                secret = m.group(0)
-                if rule != "private_key" and _is_placeholder(secret):
-                    continue
-                yield rule, m.start(), m.end(), secret
+                yield rule, start, end, secret
+            continue
+        for m in pattern.finditer(text):
+            secret = m.group(0)
+            if rule != "private_key" and _is_placeholder(secret):
+                continue
+            yield rule, m.start(), m.end(), secret
+
+
+def generic_candidates(text: str):
+    """(start, end) of each quoted value assigned to a name containing api/secret/token/password.
+
+    Same spans as a plain non-overlapping finditer of `name ["']? [:=] "value"` (tested against the
+    former regex): a candidate inside the previous match is skipped.
+    """
+    resume = 0
+    for m in GENERIC.finditer(text):
+        if m.start() >= resume and GENERIC_NAME.search(m.group(1)):
+            resume = m.end(2) + 1
+            yield m.start(2), m.end(2)
 
 
 def scan_text(path: str, text: str) -> list[Finding]:

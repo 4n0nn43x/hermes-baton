@@ -7,7 +7,7 @@ import re
 import time
 
 ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-ID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
+ID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
 
 
 def _encode(value: int, length: int) -> str:
@@ -30,7 +30,7 @@ def new_id(now_ms: int | None = None, randomness: bytes | None = None) -> str:
 
 
 def is_valid(value: object) -> bool:
-    return isinstance(value, str) and bool(ID_RE.match(value))
+    return isinstance(value, str) and bool(ID_RE.fullmatch(value))
 
 
 def require_valid(value: object) -> str:

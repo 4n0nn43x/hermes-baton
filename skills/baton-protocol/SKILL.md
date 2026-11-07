@@ -18,8 +18,10 @@ check passes, or an honest failure.
    by hand. Do not run `git checkout`, `git reset --hard` or `git rebase` in the worktree: the
    returned branch must keep the received snapshot as an ancestor.
 3. **Check.** Call `baton_check` with the id. It runs the agreed command in the worktree (no shell,
-   minimal environment, timeout) and returns `passed`, `exit`, the last 4 KB of output (`tail`) and
-   the sha256 of the full log. Fix, then check again, until `passed` is true.
+   minimal environment, an empty throwaway `HOME`, timeout; the Hermes home is hidden when bubblewrap
+   works on this machine) and returns `passed`, `exit`, the last 4 KB of output (`tail`) and the
+   sha256 of the full log. Fix, then check again, until `passed` is true. Do not make tests depend on
+   files in the home directory.
 4. **Return.** Call `baton_return` with the id, a short `summary` of what you changed and why, and
    `status: "verified"`. It commits your changes, refuses with `check_stale` if files changed after
    the last green check (run `baton_check` again), and pushes the branch and the result.
@@ -29,9 +31,10 @@ check passes, or an honest failure.
 
 ## Rules
 
-- The check command comes from the sender and is filtered by this machine's `allowed_checks`. If
-  `baton_check` answers `check_not_allowed`, return `failed` with that reason; do not run the
-  command another way.
+- The check command comes from the sender and is filtered by this machine's `allowed_checks`: it must
+  be one of those entries, followed only by safe flags (`-q`, `-v`, `-x`, `-s`, `-p no:<plugin>`...)
+  and relative paths inside the worktree. If `baton_check` answers `check_not_allowed`, return
+  `failed` with that reason; do not run the command another way.
 - Never print, copy or commit secrets. Do not add credentials to make a test pass.
 - Approvals still apply to your other tools. If a command is refused, find another way or fail
   honestly.
@@ -45,5 +48,6 @@ check passes, or an honest failure.
 |---|---|---|
 | `baton_cancelled` | the sender cancelled | stop, nothing to return |
 | `manifest_invalid` | package tampered or corrupt | stop, report it in your final message |
+| `unsafe_snapshot` | the snapshot has symlinks pointing outside the worktree | stop, report it in your final message |
 | `check_failed` / `check_missing` / `check_stale` | no fresh green check | run `baton_check` |
 | `already_returned` | result already pushed | nothing more to do |

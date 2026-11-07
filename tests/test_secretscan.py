@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import random
+import re
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -103,3 +106,27 @@ def test_redact_text_counts_hits():
 def test_entropy_values():
     assert secretscan.entropy("aaaa") == 0
     assert secretscan.entropy("abcd") == 2
+
+
+# ReDoS regression: the former generic_secret regex, kept here as the reference for the same spans.
+OLD_GENERIC = re.compile(r"(?i)[\w.-]*(?:api|secret|token|password)[\w.-]*[\"']?\s*[:=]\s*[\"']([^\"'\s]{16,})[\"']")
+PIECES = ["api", "TOKEN", "Secret", "password", "ſecret", "key", "x", "_", ".", "-", "=", ":", " ", "\t", "\n",
+          '"', "'", "#", "/", "Zq8#vL2!pX9@mK4$wR7", "abcdefghijklmnopqrstuv", "AKIA"]
+
+
+def test_generic_candidates_match_former_regex():
+    rng = random.Random(7)
+    for _ in range(30000):
+        text = "".join(rng.choice(PIECES) for _ in range(rng.randint(0, 14)))
+        old = [(m.start(1), m.end(1)) for m in OLD_GENERIC.finditer(text)]
+        assert list(secretscan.generic_candidates(text)) == old, text
+
+
+@pytest.mark.parametrize("unit", ["a", "token", "api_key ", "api_key= ", "k='" + "x" * 40, "sk-", "1",
+                                  "-----BEGIN A ", "a.b-c_", "password\t:\t", "secret='aaaaaaaaaaaaaaaaaaaa' "])
+def test_scan_is_linear_on_adversarial_2mib(unit):
+    text = (unit * (secretscan.MAX_SCAN_BYTES // len(unit) + 1))[:secretscan.MAX_SCAN_BYTES]
+    for fn in (lambda: secretscan.scan_text("min.js", text), lambda: secretscan.redact_text(text)):
+        start = time.perf_counter()
+        fn()
+        assert time.perf_counter() - start < 1.0

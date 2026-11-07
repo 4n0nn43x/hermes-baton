@@ -1,19 +1,24 @@
 """Remote side: receive, check, return, the deterministic `work` path and the pre_verify decision.
 
 The remote works only in a throwaway worktree of a private cache repository, runs only checks whose
-argv starts with an allowlisted prefix (owned by the remote's config, not by the manifest), and
-cannot return `verified` unless the last green check matches the current tree.
+argv is an allowlisted entry (owned by the remote's config, not by the manifest) followed at most by
+safe flags and relative paths inside the worktree, with an empty throwaway HOME (and the Hermes home
+hidden by bubblewrap when it works here), and cannot return `verified` unless the last green check
+matches the current tree.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import signal
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from functools import lru_cache
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 from . import gitutil, ids, manifest, refs
@@ -22,7 +27,13 @@ from .store import BatonStore
 
 DEFAULT_ALLOWED_CHECKS = [["python", "-m", "pytest"], ["pytest"], ["npm", "test"], ["make", "test"],
                           ["cargo", "test"], ["go", "test"]]
-ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "USER", "LOGNAME", "TERM")
+ENV_ALLOWLIST = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "USER", "LOGNAME", "TERM")
+# Toolchains kept under the real HOME that break without it (rustup proxies, offline crates and go
+# modules): the variable is passed through, or points at the real directory when that exists.
+TOOLCHAIN_DIRS = {"RUSTUP_HOME": ".rustup", "CARGO_HOME": ".cargo", "GOPATH": "go"}
+# Extra arguments a check may add after its allowlisted entry, besides relative paths in the worktree.
+SAFE_FLAGS = frozenset({"-q", "-qq", "-v", "-vv", "-x", "-s", "--quiet", "--verbose", "--exitfirst"})
+SANDBOX_BASE = ("--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent")
 TAIL_BYTES = 4096
 CACHE_EXCLUDES = "__pycache__/\n*.pyc\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\nnode_modules/\n.venv/\n"
 NUDGE = ("Run baton_check for baton {id}; finish only when it passes, or call baton_return with status "
@@ -37,6 +48,7 @@ class RemoteSettings:
     check_timeout_s: int = 900
     role: str = "both"
     net_timeout_s: int = 120
+    sandbox: str = "auto"  # "auto": bubblewrap when it works here; "off": never
 
     @classmethod
     def from_config(cls, cfg: Mapping[str, Any] | None, data_dir: Path | str) -> "RemoteSettings":
@@ -50,7 +62,8 @@ class RemoteSettings:
             workspace=Path(cfg.get("workspace") or Path(data_dir) / "work"),
             allowed_checks=[[str(x) for x in a] for a in allowed],
             check_timeout_s=int(cfg.get("check_timeout_s") or 900),
-            role=role if role in ("local", "remote", "both") else "both")
+            role=role if role in ("local", "remote", "both") else "both",
+            sandbox="off" if str(cfg.get("sandbox") or "auto").lower() == "off" else "auto")
 
     @property
     def cache(self) -> Path:
@@ -126,6 +139,11 @@ def receive(baton_id: str, settings: RemoteSettings, store: BatonStore, session_
             gitutil.update_ref(cache, branch, m["repo"]["project_commit"])
         gitutil.run_git(["worktree", "prune"], cache, check=False)
         gitutil.run_git(["worktree", "add", "--quiet", str(wt), refs.branch_name(baton_id)], cache)
+        escaping = _escaping_links(wt, m["repo"]["project_commit"])
+        if escaping:
+            gitutil.run_git(["worktree", "remove", "--force", str(wt)], cache, check=False)
+            raise BatonError("unsafe_snapshot", "symlinks point outside the worktree: " + ", ".join(escaping[:5]),
+                             {"symlinks": escaping})
         record = {"id": baton_id, "in_sha": in_sha, "worktree": str(wt), "manifest": m, "state": "RECEIVED",
                   "session_id": session_id, "checks": 0, "last_check": None, "result": None}
         store.save_remote(baton_id, record)
@@ -141,12 +159,43 @@ def receive(baton_id: str, settings: RemoteSettings, store: BatonStore, session_
             "state": record["state"], "transcript_excerpt": excerpt}
 
 
+def _escaping_links(wt: Path, commit: str) -> list[str]:
+    """Symlinks of `commit` that resolve outside the worktree (absolute, `..`, chains, loops): the
+    agent's file tools would follow them to the remote's own files."""
+    raw = gitutil.run_git(["ls-tree", "-r", "-z", commit], wt).stdout.decode("utf-8", "replace")
+    root = wt.resolve()
+    out = []
+    for entry in raw.split("\0"):
+        if entry.startswith("120000 "):
+            path = entry.split("\t", 1)[1]
+            try:
+                inside = (wt / path).resolve().is_relative_to(root)
+            except (OSError, RuntimeError):  # symlink loop
+                inside = False
+            if not inside:
+                out.append(path)
+    return out
+
+
 def _require_record(store: BatonStore, baton_id: str) -> dict:
     ids.require_valid(baton_id)
     record = store.get_remote(baton_id)
     if not record:
         raise BatonError("not_received", f"call baton_receive for {baton_id} first")
+    if record.get("state") == "CANCELLED":
+        raise BatonError("baton_cancelled", f"baton {baton_id} was cancelled by its sender")
     return record
+
+
+def _refuse_if_cancelled(settings: RemoteSettings, store: BatonStore, record: dict) -> None:
+    """Read the shared status before pushing: a return must not overwrite the sender's CANCELLED."""
+    ref = refs.status_ref(record["id"])
+    if ref in refs.remote_refs(settings.cache, settings.remote_git, record["id"], settings.net_timeout_s):
+        refs.fetch(settings.cache, settings.remote_git, {ref: ref}, settings.net_timeout_s)
+    if (gitutil.read_json_ref(settings.cache, ref, "status.json") or {}).get("state") == "CANCELLED":
+        record["state"] = "CANCELLED"
+        store.save_remote(record["id"], record)
+        raise BatonError("baton_cancelled", f"baton {record['id']} was cancelled by its sender")
 
 
 def tree_hash(worktree: Path | str) -> str:
@@ -158,35 +207,125 @@ def tree_hash(worktree: Path | str) -> str:
         return gitutil.out(["write-tree"], worktree, env=env)
 
 
-def allowed(argv: list[str], allowed_checks: Iterable[list[str]]) -> bool:
-    return any(len(argv) >= len(prefix) and argv[: len(prefix)] == list(prefix) for prefix in allowed_checks)
+def check_refusal(argv: list[str], allowed_checks: Iterable[list[str]], worktree: Path | str) -> str | None:
+    """Why `argv` may not run, or None. Policy: argv is an `allowed_checks` entry followed only by
+    SAFE_FLAGS, `-p no:<plugin>` pairs and relative paths that stay inside the worktree."""
+    reason = "it does not start with an allowed check"
+    for entry in allowed_checks:
+        entry = list(entry)
+        if argv[: len(entry)] == entry:
+            reason = _extra_refusal(argv[len(entry):], Path(worktree).resolve())
+            if reason is None:
+                return None
+    return reason
 
 
-def check_env(worktree: Path | str) -> dict[str, str]:
+def _extra_refusal(extra: list[str], root: Path) -> str | None:
+    i = 0
+    while i < len(extra):
+        arg = extra[i]
+        if arg == "-p" and i + 1 < len(extra) and extra[i + 1].startswith("no:"):
+            i += 2
+            continue
+        if arg not in SAFE_FLAGS and (
+                arg.startswith(("-", "@")) or "=" in arg or "\0" in arg or PurePosixPath(arg).is_absolute()
+                or not (root / arg).resolve().is_relative_to(root)):
+            return f"extra argument {arg!r} is neither a safe flag nor a relative path inside the worktree"
+        i += 1
+    return None
+
+
+def allowed(argv: list[str], allowed_checks: Iterable[list[str]], worktree: Path | str = ".") -> bool:
+    return check_refusal(list(argv), allowed_checks, worktree) is None
+
+
+def check_env(home: Path | str) -> dict[str, str]:
+    """Minimal env for a check: no provider keys, no HERMES_*, HOME = `home` (an empty throwaway dir;
+    XDG_* are unset, so their defaults land in it too)."""
     env = {k: os.environ[k] for k in ENV_ALLOWLIST if k in os.environ}
     env.setdefault("PATH", os.defpath)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["CI"] = "1"
+    for var, sub in TOOLCHAIN_DIRS.items():
+        value = os.environ.get(var) or (str(Path.home() / sub) if (Path.home() / sub).is_dir() else "")
+        if value:
+            env[var] = value
+    env.update(HOME=str(home), PYTHONDONTWRITEBYTECODE="1", CI="1")
     return env
 
 
+def hermes_dirs() -> list[Path]:
+    """The Hermes homes a check must not see: ~/.hermes and $HERMES_HOME (when they exist)."""
+    dirs = {Path.home() / ".hermes", Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")}
+    return sorted(d.resolve() for d in dirs if d.is_dir())
+
+
+@lru_cache(maxsize=1)
+def _bwrap() -> str | None:
+    """bubblewrap when installed and allowed to create namespaces here (often not in Docker), else None."""
+    path = shutil.which("bwrap")
+    if not path:
+        return None
+    try:
+        probe = subprocess.run([path, *SANDBOX_BASE, "--", "true"], capture_output=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return path if probe.returncode == 0 else None
+
+
+def sandboxed(argv: list[str], env: Mapping[str, str], hide: list[Path], keep: list[Path]) -> tuple[list[str], str]:
+    """(argv to run, sandbox note). With bubblewrap, `hide` dirs are masked by empty tmpfs, `keep` dirs
+    are bound back, and every process of the check dies with it (own pid namespace)."""
+    if not hide:
+        return argv, "off: no Hermes home to hide"
+    bwrap = _bwrap()
+    if not bwrap:
+        return argv, "off: bubblewrap missing or unusable here"
+    exe = shutil.which(argv[0], path=env.get("PATH"))
+    if exe and any(p.is_relative_to(h) for p in (Path(os.path.abspath(exe)), Path(exe).resolve()) for h in hide):
+        return argv, f"off: {argv[0]} lives inside the Hermes home"
+    mounts = [(d, "--tmpfs") for d in hide] + [(Path(d).resolve(), "--bind") for d in keep]
+    args = [bwrap, *SANDBOX_BASE]
+    for path, op in sorted(mounts, key=lambda m: len(m[0].parts)):  # parents first, children on top
+        args += [op, str(path)] if op == "--tmpfs" else [op, str(path), str(path)]
+    return [*args, "--", *argv], "bwrap"
+
+
+def _kill_group(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def run_check(argv: list[str], cwd: Path | str, timeout: float, env: Mapping[str, str]) -> tuple[int | None, bytes, bool]:
-    """Run argv without a shell in its own process group. Returns (exit or None, output, timed_out)."""
-    try:
-        proc = subprocess.Popen(argv, cwd=str(cwd), env=dict(env), stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
-    except (FileNotFoundError, PermissionError) as exc:
-        return 127, f"cannot run {argv[0]}: {exc}\n".encode(), False
-    try:
-        output, _ = proc.communicate(timeout=timeout)
-        return proc.returncode, output, False
-    except subprocess.TimeoutExpired:
+    """Run argv without a shell in its own process group. Returns (exit or None, output, timed_out).
+
+    Output goes to a temp file, so a grandchild that keeps it open cannot stall the deadline. The
+    group is killed when the check ends or times out, while the leader is still unreaped (no pid
+    reuse). A descendant that called setsid() escapes the group (not the bubblewrap pid namespace).
+    """
+    with tempfile.TemporaryFile(prefix="baton-check-") as log:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()
-        output, _ = proc.communicate()
+            proc = subprocess.Popen(argv, cwd=str(cwd), env=dict(env), stdin=subprocess.DEVNULL,
+                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        except (FileNotFoundError, PermissionError) as exc:
+            return 127, f"cannot run {argv[0]}: {exc}\n".encode(), False
+        deadline = time.monotonic() + timeout
+        timed_out = False
+        try:
+            while os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    break
+                time.sleep(0.05)
+        except ChildProcessError:  # reaped by someone else: nothing left to wait for
+            pass
+        _kill_group(proc.pid)
+        proc.wait()
+        log.seek(0)
+        output = log.read()
+    if timed_out:
         return None, output + f"\n[baton] check timed out after {timeout}s\n".encode(), True
+    return proc.returncode, output, False
 
 
 def check(baton_id: str, settings: RemoteSettings, store: BatonStore) -> dict:
@@ -195,17 +334,24 @@ def check(baton_id: str, settings: RemoteSettings, store: BatonStore) -> dict:
         raise BatonError("already_returned", f"baton {baton_id} was already returned")
     dw = record["manifest"]["done_when"]
     argv = list(dw["argv"])
-    if not allowed(argv, settings.allowed_checks):
-        raise BatonError("check_not_allowed", f"{argv!r} does not start with an allowed check prefix")
     wt = Path(record["worktree"])
+    refusal = check_refusal(argv, settings.allowed_checks, wt)
+    if refusal:
+        raise BatonError("check_not_allowed", f"{argv!r} refused: {refusal}",
+                         {"argv": argv, "allowed_checks": settings.allowed_checks})
     tree = tree_hash(wt)
     timeout = min(int(dw.get("timeout_s") or settings.check_timeout_s), settings.check_timeout_s)
-    code, output, timed_out = run_check(argv, wt, timeout, check_env(wt))
+    with tempfile.TemporaryDirectory(prefix="baton-home-", ignore_cleanup_errors=True) as home:
+        env = check_env(home)
+        cmd, sandbox = ((argv, "off: disabled in config") if settings.sandbox == "off"
+                        else sandboxed(argv, env, hermes_dirs(), [settings.workspace]))
+        code, output, timed_out = run_check(cmd, wt, timeout, env)
     passed = (not timed_out) and code == int(dw.get("expect_exit", 0))
     log_dir = settings.workspace / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     (log_dir / f"baton-{baton_id}.log").write_bytes(output)
     result = {"argv": argv, "exit": code, "passed": passed, "timed_out": timed_out, "tree": tree,
+              "sandbox": sandbox,
               "log_sha256": hashlib.sha256(output).hexdigest(), "log_bytes": len(output),
               "tail": output[-TAIL_BYTES:].decode("utf-8", "replace"), "at": manifest.now_rfc3339()}
     record["last_check"] = result
@@ -234,6 +380,7 @@ def return_baton(baton_id: str, summary: str, status: str, settings: RemoteSetti
         head_now = gitutil.rev_parse(wt, "HEAD")
         if head_now == previous.get("head") and tree_hash(wt) == gitutil.out(["rev-parse", "HEAD^{tree}"], wt):
             return {"id": baton_id, **previous, "replayed": True}
+    _refuse_if_cancelled(settings, store, record)
     tree_before = tree_hash(wt)
     last = record.get("last_check") or {}
     if status == "verified":
