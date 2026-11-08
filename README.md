@@ -117,11 +117,12 @@ What it does, all under `demo/.work/`:
   repo before and after (must be identical), stops the gateway with SIGTERM and checks the port is
   closed.
 
-Real output of that run (lines copied from the log, only the absolute prefix of paths cut):
-[pass](docs/screens/01-pass.png), [remote check](docs/screens/02-remote-check.png),
+Real output of the same scenario with a real remote agent doing step 5 (`demo/run-agent.sh`, 8 Nov 2026;
+lines copied from the log, absolute paths shortened):
+[pass](docs/screens/01-pass.png), [remote agent](docs/screens/02-remote-check.png),
 [land](docs/screens/03-land.png).
 
-![remote: red check, fix, green check, returned verified; a non-allowlisted check refused](docs/screens/02-remote-check.png)
+![remote: a real agent receives, fixes, checks and returns VERIFIED; a non-allowlisted check is refused](docs/screens/02-remote-check.png)
 
 Measured on the author's machine (Linux, 8 Nov 2026, two runs): the first plugin enable in a fresh home took
 409 s and 631 s, the second home 56 to 86 s, the API server extra 103 to 390 s, and the baton steps

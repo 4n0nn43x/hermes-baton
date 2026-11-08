@@ -368,7 +368,7 @@ note "the remote agent returned VERIFIED after $((SECONDS - t0))s"
   --format md > "$WORK/remote/export.log" 2>&1 || true
 if ls "$WORK/remote/session"/*.md >/dev/null 2>&1; then
   note "its tool calls, in order (from hermes sessions export of its session):"
-  grep -h -E '^### Tool' "$WORK/remote/session"/*.md | sed 's/^### Tool[^A-Za-z_]*/     /' | head -n 60
+  grep -h -E '^### Tool' "$WORK/remote/session"/*.md | sed -E 's/^### Tool[^A-Za-z_]*([A-Za-z_]+).*/     \1/' | head -n 60
   note "pre_verify reminders it received: $(grep -h -c 'Run baton_check for baton' "$WORK/remote/session"/*.md | awk '{s += $1} END {print s + 0}')"
 else
   note "(session export unavailable, see demo/.work/remote/export.log)"
