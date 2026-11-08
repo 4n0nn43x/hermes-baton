@@ -22,7 +22,7 @@ from baton_plugin import ids, secretscan  # noqa: E402
 from baton_plugin.store import BatonStore  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-SAMPLE = ROOT / "judge" / "sample"
+SAMPLE = ROOT / "demo" / "sample"
 
 
 class FakeCtx:

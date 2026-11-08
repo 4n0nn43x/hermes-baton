@@ -1,9 +1,7 @@
 # Baton (SPEC)
 
-Authority order for this repo: SPEC > tests > code. Research behind every decision:
-`../_research/R3-baton.md` (transports, Runs API, remote side, git proof, file:line at v0.23.0),
-`../_research/R1-manuel-plugin.md` (packaging, verified skeleton, isolated test environments),
-`../_research/analyse-2026-11-06/5-soumission-revue.md` (scanner rules, review reasons).
+Design reference for this repository: when the code changes behavior, this document and the tests
+change with it.
 Target: Hermes Agent v0.23.0 (`requires_hermes: ">=0.23.0"`), Python >= 3.11.
 
 ## 1. Product in one paragraph
@@ -19,21 +17,21 @@ Desktop dependency, every step resumable after a network cut (same id = same run
 ## 2. Repository layout (repo root IS the plugin directory)
 
 ```
-plugin.yaml, pyproject.toml, __init__.py (register: tools, hook, /baton, CLI, skills)   (BT-C)
-ids.py          ULID-like sortable ids                                                 (BT-A)
-gitutil.py      run_git (argv only, sanitized env, timeout), small helpers              (BT-A)
-capture.py      ghost commit of the working tree without touching it                    (BT-A)
-secretscan.py   blocking secret scan of the outgoing tree diff and file names           (BT-A)
-manifest.py     BATON.json v1 build/verify, SHA256SUMS                                   (BT-A)
-transcript.py   session export via `hermes sessions export --redact` + extra pass, cap   (BT-A)
-runs.py         HTTP client for the remote gateway API server (urllib)                   (BT-A)
-peers.py        resolve a peer: URL + key (reuse `hermes peer add` records)              (BT-A)
-store.py        local baton records and the state machine                                (BT-A)
-local.py        pass / status / land / list / cancel orchestration                       (BT-A)
-remote.py       receive / check / return / work + pre_verify decision                    (BT-B)
-skills/baton-protocol/SKILL.md   instructions for the REMOTE agent                       (BT-B)
-skills/baton/SKILL.md            usage skill for the LOCAL agent                          (BT-B)
-judge/          run-local.sh, run-docker.sh, run-agent.sh, sample/ (project with a red test), teardown.sh (BT-B)
+plugin.yaml, pyproject.toml, __init__.py (register: tools, hook, /baton, CLI, skills)
+ids.py          ULID-like sortable ids
+gitutil.py      run_git (argv only, sanitized env, timeout), small helpers
+capture.py      ghost commit of the working tree without touching it
+secretscan.py   blocking secret scan of the outgoing tree diff and file names
+manifest.py     BATON.json v1 build/verify, SHA256SUMS
+transcript.py   session export via `hermes sessions export --redact` + extra pass, cap
+runs.py         HTTP client for the remote gateway API server (urllib)
+peers.py        resolve a peer: URL + key (reuse `hermes peer add` records)
+store.py        local baton records and the state machine
+local.py        pass / status / land / list / cancel orchestration
+remote.py       receive / check / return / work + pre_verify decision
+skills/baton-protocol/SKILL.md   instructions for the REMOTE agent
+skills/baton/SKILL.md            usage skill for the LOCAL agent
+demo/          run-local.sh, run-docker.sh, run-agent.sh, sample/ (project with a red test), teardown.sh
 tests/          pytest; core tests never import Hermes
 README.md       catalog page
 ```
@@ -51,7 +49,7 @@ imports the plugin as package `hermes_plugins.baton`; tests load it as `baton_pl
   - `refs/baton/<id>/result`: commit whose tree has `result.json`.
 - Local landing: `refs/heads/baton/<id>` in the user's repo (never checked out automatically).
 
-## 4. Capture and package (BT-A)
+## 4. Capture and package
 
 `capture.ghost_commit(repo: Path) -> CaptureResult(project_commit, files, untracked_included)`:
 copy the real index to a temp file; `GIT_INDEX_FILE=<tmp> git add -A` (respects .gitignore);
@@ -91,7 +89,7 @@ the secret patterns above (replace with `[REDACTED]`, count hits); keep the task
 user/assistant turns, tool outputs cut to 2 KB each; cap 64 KB. No session id (CLI pass): transcript
 is just the task text.
 
-## 5. Transport (BT-A)
+## 5. Transport
 
 Peers (`peers.resolve(name, config) -> Peer(name, url, key)`): read the `hermes peer add` record
 (`bot_peers` in config.yaml, key `HERMES_PEER_<NAME>_KEY` from the environment/secret scope; verify
@@ -117,7 +115,7 @@ cannot). Contains the task text, never secrets.
 Fallback mailbox mode (bonus, after MVP): no API reachable; the remote polls `refs/baton/*/in`
 with `hermes baton work --pending` from a user-created cron job.
 
-## 6. Local commands (BT-A logic, BT-C wiring)
+## 6. Local commands
 
 `local.pass_baton(repo, task, peer, done_when_argv, remote_git, session_id=None, trigger=True, dry_run=False) -> BatonRecord`
 steps, each recorded so `resume` restarts at the first undone step: PREPARED (capture, scan, transcript,
@@ -135,7 +133,7 @@ RETURNED, FAILED, LANDED, CANCELLED, EXPIRED. Store: JSON records under the plug
 injected by the glue; default `$HERMES_HOME/plugin-data/baton/` via `hermes_constants.get_hermes_home()`
 resolved ONLY in `__init__.py`).
 
-## 7. Remote side (BT-B)
+## 7. Remote side
 
 Settings (read at call time): `role` (`local`, `remote`, `both`; default `both`), `remote_git` (URL or
 path of the shared bare repo), `workspace` (dir for worktrees; default `<plugin data>/work`),
@@ -177,10 +175,10 @@ Tools (always registered; `check_fn` hides them when role is `local`):
   or a baton worktree among changed paths) and there is no green check for the current tree, return
   `{"action": "continue", "message": "Run baton_check for baton <id>; finish only when it passes, or call baton_return with status failed and the reason."}`;
   otherwise None. Bounded by Hermes (`agent.max_verify_nudges`).
-- `remote.work(id)` (CLI `hermes baton work <id> [--no-agent]`): deterministic path used by judges and
+- `remote.work(id)` (CLI `hermes baton work <id> [--no-agent]`): deterministic path used by demos and
   CI: receive -> check -> return (verified or failed) without any model.
 
-## 8. Hermes wiring (BT-C)
+## 8. Hermes wiring
 
 `/baton <task> [--peer NAME] [--done-when "argv string"] [--dry-run]` (sync handler; gets
 `session_id` from the dispatcher kwargs when declared; uses `ctx.session_cwd()` as the repo).
@@ -189,20 +187,20 @@ CLI `hermes baton pass|status|land|list|cancel|work|doctor` via `ctx.register_cl
 Skills registered with `ctx.register_skill`. Extra redaction patterns via `ctx.register_redaction_patterns`.
 Never writes Hermes config, never changes approvals, never uses yolo.
 
-## 9. Judge path
+## 9. Demo path
 
-`judge/run-local.sh`: creates `judge/.work/` with a bare repo, a sample project with a red test, a
+`demo/run-local.sh`: creates `demo/.work/` with a bare repo, a sample project with a red test, a
 "remote" isolated Hermes home (outside `~/.hermes`, private `HERMES_GATEWAY_LOCK_DIR` and
 `XDG_STATE_HOME`, `GATEWAY_MULTIPLEX_PROFILES=false`) whose gateway runs the API server on
 127.0.0.1:8652 with a random key, installs the plugin in both homes from the local checkout
 (`file://...`), passes a baton with `--done-when "python -m pytest -q"`, runs `hermes baton work <id>`
 in the remote home (no model), lands, and prints `git status` (unchanged) and `git log baton/<id>`.
-`judge/run-docker.sh`: same with the remote in `nousresearch/hermes-agent:v0.23.0` (warn: 1.1 GB pull).
-`judge/teardown.sh` removes everything it created. `judge/run-agent.sh` is the real-agent variant:
-`BATON_JUDGE_AGENT_HOME` names an existing Hermes home whose default model works (never `~/.hermes`),
+`demo/run-docker.sh`: same with the remote in `nousresearch/hermes-agent:v0.23.0` (warn: 1.1 GB pull).
+`demo/teardown.sh` removes everything it created. `demo/run-agent.sh` is the real-agent variant:
+`BATON_DEMO_AGENT_HOME` names an existing Hermes home whose default model works (never `~/.hermes`),
 the plugin is installed there with role remote, the API server key reaches its gateway through the
 process environment only, and the model does step 5 itself (receive, fix, check, return) under a
-timeout (`BATON_JUDGE_AGENT_TIMEOUT`, 1200 s).
+timeout (`BATON_DEMO_AGENT_TIMEOUT`, 1200 s).
 
 ## 10. Tests (target >= 100, green, no network except loopback, no model calls)
 
@@ -218,7 +216,7 @@ pre_verify decisions, full loop with two temp repos and a bare remote, `work` de
 ## 11. Definition of done
 
 pytest green; `hermes plugins validate .` passes with 0 warnings, verdict safe; `doctor --ci` exit 0;
-`judge/run-local.sh` succeeds end to end on this machine; README has Try it, Verify in 5 minutes,
+`demo/run-local.sh` succeeds end to end on this machine; README has Try it, Verify in 5 minutes,
 Disclosures (git pushes to the configured remote, HTTP to the configured peer, subprocess `hermes
 sessions export` and `git`, the allowlisted check command on the remote), What is not covered
 (Hermes Cloud API reachability depends on the instance; Desktop surface not included).

@@ -3,6 +3,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 .coverage
-judge/.work/
+demo/.work/
 scripts/.out/
 *.egg-info/

@@ -1,4 +1,4 @@
-"""Review follow-ups applied after the judge run: send-side symlink refusal, corrupt registry records,
+"""Review follow-ups applied after the demo run: send-side symlink refusal, corrupt registry records,
 and the manifest's expect_exit type."""
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def test_sandbox_setting_reaches_the_remote_settings(tmp_path, monkeypatch):
 
 def test_check_path_puts_the_hermes_tool_store_last(tmp_path, monkeypatch):
     """Inside a Hermes process PATH starts with Hermes's own tools (its Python has no pytest):
-    the real judge run got `No module named pytest` for `python -m pytest -q`."""
+    the real demo run got `No module named pytest` for `python -m pytest -q`."""
     from baton_plugin import remote
 
     home = tmp_path / "hermes-home"
@@ -113,7 +113,7 @@ def test_check_path_puts_the_hermes_tool_store_last(tmp_path, monkeypatch):
 
 def test_check_path_keeps_user_dirs_when_the_hermes_home_is_home(tmp_path, monkeypatch):
     """The official Docker image sets HERMES_HOME=/opt/data, which is also the hermes user's HOME: a
-    venv or ~/.local/bin there belongs to the user. The first Docker judge run got
+    venv or ~/.local/bin there belongs to the user. The first Docker demo run got
     `/usr/bin/python: No module named pytest` because /opt/data/checkenv/bin was moved last."""
     from baton_plugin import remote
 

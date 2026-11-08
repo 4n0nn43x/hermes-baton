@@ -1,42 +1,42 @@
 #!/usr/bin/env bash
-# Baton judge path on ONE machine, with TWO real Hermes v0.23.0 instances:
+# Baton demo on ONE machine, with TWO real Hermes v0.23.0 instances:
 #   "local"  : a Hermes home with the plugin, CLI only (the laptop that passes the baton)
 #   "remote" : a Hermes home with the plugin AND a running gateway whose API server listens on
-#              127.0.0.1:$BATON_JUDGE_PORT (the agent that receives the baton)
+#              127.0.0.1:$BATON_DEMO_PORT (the agent that receives the baton)
 # Code travels through a shared bare git repo, the order through the remote's Runs API (/v1/runs).
 #
-# Everything lives under judge/.work/ (removed by judge/teardown.sh). Both homes are fresh and
+# Everything lives under demo/.work/ (removed by demo/teardown.sh). Both homes are fresh and
 # isolated (own HERMES_HOME, HOME, gateway lock dir and XDG dirs, GATEWAY_MULTIPLEX_PROFILES=false),
 # every Hermes process starts from `env -i` (no provider key is inherited), and no model is
 # configured: nothing paid can run. Your own ~/.hermes and your own gateway are never touched.
 #
 # Overrides: HERMES_AGENT_DIR (Hermes checkout, default ~/.hermes/hermes-agent), HERMES_PYTHON
 # (python with Hermes' dependencies, default: discovered under ~/.hermes/installs),
-# BATON_JUDGE_PORT (default 8652), BATON_JUDGE_UV_CACHE (uv cache kept across runs).
-# BATON_JUDGE_REMOTE=docker (what judge/run-docker.sh sets) runs the remote in the official image
-# instead (BATON_JUDGE_IMAGE, default nousresearch/hermes-agent:v0.23.0, about 1.1 GB to pull).
-# BATON_JUDGE_REMOTE=agent (what judge/run-agent.sh sets) makes a REAL agent do the remote work: the
-# remote side uses BATON_JUDGE_AGENT_HOME, an existing Hermes home whose default model works (never
-# ~/.hermes), with the judge's private HOME, lock dir and XDG dirs. The plugin is installed and
+# BATON_DEMO_PORT (default 8652), BATON_DEMO_UV_CACHE (uv cache kept across runs).
+# BATON_DEMO_REMOTE=docker (what demo/run-docker.sh sets) runs the remote in the official image
+# instead (BATON_DEMO_IMAGE, default nousresearch/hermes-agent:v0.23.0, about 1.1 GB to pull).
+# BATON_DEMO_REMOTE=agent (what demo/run-agent.sh sets) makes a REAL agent do the remote work: the
+# remote side uses BATON_DEMO_AGENT_HOME, an existing Hermes home whose default model works (never
+# ~/.hermes), with the demo's private HOME, lock dir and XDG dirs. The plugin is installed and
 # enabled there (role=remote), the API server settings reach its gateway through the environment
 # only, and the model receives, fixes, checks and returns the baton on its own
-# (BATON_JUDGE_AGENT_TIMEOUT, default 1200 s). Model calls are billed to that home's provider.
+# (BATON_DEMO_AGENT_TIMEOUT, default 1200 s). Model calls are billed to that home's provider.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
 WORK="$HERE/.work"
-PORT=${BATON_JUDGE_PORT:-8652}
+PORT=${BATON_DEMO_PORT:-8652}
 HERMES_AGENT_DIR=${HERMES_AGENT_DIR:-$HOME/.hermes/hermes-agent}
 SYS_PATH=/usr/local/bin:/usr/bin:/bin
-GIT_ID=(-c user.name=judge -c user.email=judge@localhost -c commit.gpgsign=false -c init.defaultBranch=main)
+GIT_ID=(-c user.name=demo -c user.email=demo@localhost -c commit.gpgsign=false -c init.defaultBranch=main)
 FIX_FROM='len(values) - 1'
 FIX_TO='len(values)'
-MODE=${BATON_JUDGE_REMOTE:-local}
-AGENT_HOME=${BATON_JUDGE_AGENT_HOME:-}
-AGENT_TIMEOUT=${BATON_JUDGE_AGENT_TIMEOUT:-1200}
-IMAGE=${BATON_JUDGE_IMAGE:-nousresearch/hermes-agent:v0.23.0}
-CNAME=baton-judge-remote
+MODE=${BATON_DEMO_REMOTE:-local}
+AGENT_HOME=${BATON_DEMO_AGENT_HOME:-}
+AGENT_TIMEOUT=${BATON_DEMO_AGENT_TIMEOUT:-1200}
+IMAGE=${BATON_DEMO_IMAGE:-nousresearch/hermes-agent:v0.23.0}
+CNAME=baton-demo-remote
 if [ "$MODE" = docker ]; then   # paths as the remote sees them, and the host path of its workspace
   R_GIT=/srv/shared.git; R_WS=/opt/data/baton-work; R_WS_HOST="$WORK/remote/data/baton-work"
 else
@@ -46,7 +46,7 @@ fi
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
 run() { printf '$ %s\n' "$*"; "$@"; }
-die() { printf 'JUDGE PATH FAILED: %s\n' "$*" >&2; exit 1; }
+die() { printf 'DEMO FAILED: %s\n' "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------------------------------
 step "0. Preflight"
@@ -70,11 +70,11 @@ case "$MODE" in
   local|docker) ;;
   agent)
     [ -n "$AGENT_HOME" ] && [ -f "$AGENT_HOME/config.yaml" ] \
-      || die "BATON_JUDGE_REMOTE=agent needs BATON_JUDGE_AGENT_HOME=<a Hermes home whose default model works>"
+      || die "BATON_DEMO_REMOTE=agent needs BATON_DEMO_AGENT_HOME=<a Hermes home whose default model works>"
     AGENT_HOME=$(realpath "$AGENT_HOME")
     case "$AGENT_HOME/" in "$(realpath -m "$HOME/.hermes")/"*) die "refusing to use your own ~/.hermes as the agent home";; esac
     note "remote: REAL agent in the Hermes home $AGENT_HOME (its default model does the work)" ;;
-  *) die "BATON_JUDGE_REMOTE must be local, docker or agent" ;;
+  *) die "BATON_DEMO_REMOTE must be local, docker or agent" ;;
 esac
 if [ "$MODE" = docker ]; then
   command -v docker >/dev/null || die "docker is not installed"
@@ -84,7 +84,7 @@ if [ "$MODE" = docker ]; then
   note "remote: docker image $IMAGE"
 fi
 if [ -e "$WORK" ]; then note "previous run found: running teardown first"; "$HERE/teardown.sh"; fi
-if ss -ltnH "sport = :$PORT" | grep -q .; then die "port $PORT is busy (set BATON_JUDGE_PORT to 8653..8655)"; fi
+if ss -ltnH "sport = :$PORT" | grep -q .; then die "port $PORT is busy (set BATON_DEMO_PORT to 8653..8655)"; fi
 note "port $PORT is free"
 
 mkdir -p "$WORK/bin"
@@ -97,8 +97,8 @@ for side in local remote; do
            "$WORK/$side/xdg/config" "$WORK/$side/xdg/cache" "$WORK/$side/xdg/data"
   cat > "$WORK/bin/hermes-$side" <<EOF
 #!/bin/sh
-# Hermes in the isolated judge home "$side" (written by judge/run-local.sh, removed by teardown.sh).
-exec env -i HOME="$WORK/$side/home" USER="\${USER:-judge}" LANG=C.UTF-8 TERM=dumb NO_COLOR=1 \\
+# Hermes in the isolated demo home "$side" (written by demo/run-local.sh, removed by teardown.sh).
+exec env -i HOME="$WORK/$side/home" USER="\${USER:-demo}" LANG=C.UTF-8 TERM=dumb NO_COLOR=1 \\
   PATH="$WORK/checkenv/bin:$SYS_PATH" \\
   HERMES_HOME="$WORK/$side/hermes" HERMES_GATEWAY_LOCK_DIR="$WORK/$side/locks" \\
   XDG_STATE_HOME="$WORK/$side/xdg/state" XDG_CONFIG_HOME="$WORK/$side/xdg/config" \\
@@ -111,7 +111,7 @@ done
 if [ "$MODE" = docker ]; then
   cat > "$WORK/bin/hermes-remote" <<EOF
 #!/bin/sh
-# Hermes inside the judge container $CNAME (written by judge/run-local.sh in docker mode).
+# Hermes inside the demo container $CNAME (written by demo/run-local.sh in docker mode).
 exec docker exec -i -u hermes -e PATH=/opt/data/checkenv/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:$SYS_PATH \\
   $CNAME hermes "\$@"
 EOF
@@ -121,17 +121,17 @@ if [ "$MODE" = agent ]; then
   printf '%s' "$KEY" > "$WORK/remote/api.key"                # umask 077: owner only
   cat > "$WORK/bin/hermes-remote" <<EOF
 #!/bin/sh
-# Hermes in the agent home $AGENT_HOME, with the judge's private HOME, lock dir and XDG dirs.
+# Hermes in the agent home $AGENT_HOME, with the demo's private HOME, lock dir and XDG dirs.
 # The API server key goes from a 0600 file into the process environment (never argv, never its .env).
-exec env -i HOME="$WORK/remote/home" USER="\${USER:-judge}" LANG=C.UTF-8 TERM=dumb NO_COLOR=1 \\
+exec env -i HOME="$WORK/remote/home" USER="\${USER:-demo}" LANG=C.UTF-8 TERM=dumb NO_COLOR=1 \\
   PATH="$WORK/checkenv/bin:$SYS_PATH" \\
   HERMES_HOME="$AGENT_HOME" HERMES_GATEWAY_LOCK_DIR="$WORK/remote/locks" \\
   XDG_STATE_HOME="$WORK/remote/xdg/state" XDG_CONFIG_HOME="$WORK/remote/xdg/config" \\
   XDG_CACHE_HOME="$WORK/remote/xdg/cache" XDG_DATA_HOME="$WORK/remote/xdg/data" \\
   GATEWAY_MULTIPLEX_PROFILES=false HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 \\
-  API_SERVER_HOST=127.0.0.1 API_SERVER_PORT=$PORT BATON_JUDGE_KEY_FILE="$WORK/remote/api.key" \\
+  API_SERVER_HOST=127.0.0.1 API_SERVER_PORT=$PORT BATON_DEMO_KEY_FILE="$WORK/remote/api.key" \\
   PYTHONPATH="$HERMES_AGENT_DIR" "$HERMES_PYTHON" -c 'import os, runpy, sys
-os.environ["API_SERVER_KEY"] = open(os.environ.pop("BATON_JUDGE_KEY_FILE")).read().strip()
+os.environ["API_SERVER_KEY"] = open(os.environ.pop("BATON_DEMO_KEY_FILE")).read().strip()
 sys.argv[0] = "hermes"
 runpy.run_module("hermes_cli.main", run_name="__main__", alter_sys=True)' "\$@"
 EOF
@@ -145,7 +145,7 @@ umask 022
 if env -i PATH="$SYS_PATH" python -m pytest --version >/dev/null 2>&1; then
   mkdir -p "$WORK/checkenv/bin"   # system python already has pytest
 else
-  note "creating judge/.work/checkenv (venv with pytest) for the check command"
+  note "creating demo/.work/checkenv (venv with pytest) for the check command"
   if command -v uv >/dev/null; then
     uv venv --quiet "$WORK/checkenv" >/dev/null 2>&1 && uv pip install --quiet --python "$WORK/checkenv/bin/python" pytest
   else
@@ -166,7 +166,7 @@ mkdir -p "$SNAP"
 done
 git -C "$SNAP" "${GIT_ID[@]}" init --quiet
 git -C "$SNAP" add -A
-git -C "$SNAP" "${GIT_ID[@]}" commit --quiet -m "judge snapshot of the plugin working tree"
+git -C "$SNAP" "${GIT_ID[@]}" commit --quiet -m "demo snapshot of the plugin working tree"
 note "plugin snapshot: $(git -C "$SNAP" ls-files | wc -l) files at $(git -C "$SNAP" rev-parse --short HEAD)"
 
 PROJ="$WORK/project"
@@ -234,9 +234,9 @@ fi
 
 step "2. Install the plugin in both homes (file:// snapshot) and configure them"
 # A fresh Hermes home prepares its own dependency environment when a plugin is enabled (a full
-# download the first time). Both judge homes share one uv cache, so only the first one downloads;
-# BATON_JUDGE_UV_CACHE=<dir> keeps that cache across runs (teardown.sh never deletes it).
-UV_SHARED=${BATON_JUDGE_UV_CACHE:-$WORK/uv-cache}
+# download the first time). Both demo homes share one uv cache, so only the first one downloads;
+# BATON_DEMO_UV_CACHE=<dir> keeps that cache across runs (teardown.sh never deletes it).
+UV_SHARED=${BATON_DEMO_UV_CACHE:-$WORK/uv-cache}
 mkdir -p "$UV_SHARED"
 for side in local remote; do
   [ "$MODE/$side" = agent/remote ] && continue   # the agent home keeps its own cache
@@ -262,7 +262,7 @@ for side in local remote; do
   "$H" config set plugins.entries.baton.settings.remote_git "$git_url" >/dev/null
 done
 "$HR" config set plugins.entries.baton.settings.workspace "$R_WS" >/dev/null
-note "settings: local role=local, remote role=remote, both on the shared bare repo judge/.work/shared.git"
+note "settings: local role=local, remote role=remote, both on the shared bare repo demo/.work/shared.git"
 if [ "$MODE" = local ]; then
   # The remote's API server: key, host and port in its own .env (throwaway key, never printed).
   umask 077
@@ -277,9 +277,9 @@ if [ "$MODE" != docker ]; then
   note "remote home: hermes pm install --extra messaging (API server dependencies) in $((SECONDS - t0))s"
 fi
 # Register the remote as a peer on the local side, exactly like a user would (`hermes peer add`).
-"$HL" peer add judge --url "http://127.0.0.1:$PORT" --key "$KEY" >/dev/null
-note "local: hermes peer add judge --url http://127.0.0.1:$PORT --key <generated, not shown>"
-grep -q "^HERMES_PEER_JUDGE_KEY=" "$WORK/local/hermes/.env" || die "peer key not stored in the local home"
+"$HL" peer add box --url "http://127.0.0.1:$PORT" --key "$KEY" >/dev/null
+note "local: hermes peer add box --url http://127.0.0.1:$PORT --key <generated, not shown>"
+grep -q "^HERMES_PEER_BOX_KEY=" "$WORK/local/hermes/.env" || die "peer key not stored in the local home"
 
 # ---------------------------------------------------------------------------------------------------
 step "3. Start the remote gateway (API server on 127.0.0.1:$PORT)"
@@ -305,7 +305,7 @@ who="container $CNAME"; [ -n "$GW_PID" ] && who="pid $GW_PID"
 note "gateway $who; $(ss -ltnpH "sport = :$PORT" | awk '{print $4}') listening"
 note "GET /health without key -> HTTP $(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health")"
 note "GET /v1/capabilities without key -> HTTP $(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/capabilities")"
-run "$HL" baton doctor --peer judge
+run "$HL" baton doctor --peer box
 
 # ---------------------------------------------------------------------------------------------------
 fingerprint() {  # everything Baton promises not to touch in the local repo
@@ -321,7 +321,7 @@ fingerprint > "$WORK/fingerprint.before"
 
 step "4. GREEN path: pass a baton from the local home (real Runs API trigger)"
 TASK="Fix mean() in calc.py so the test suite passes"
-(cd "$PROJ" && run "$HL" baton pass "$TASK" --peer judge --done-when "python -m pytest -q") | tee "$WORK/pass1.out"
+(cd "$PROJ" && run "$HL" baton pass "$TASK" --peer box --done-when "python -m pytest -q") | tee "$WORK/pass1.out"
 ID=$(sed -n 's/^baton \([0-9A-HJKMNP-TV-Z]\{26\}\): .*/\1/p' "$WORK/pass1.out" | head -n 1)
 [ -n "$ID" ] || die "no baton id in the pass output"
 grep -q "TRIGGERED" "$WORK/pass1.out" || die "the pass did not reach TRIGGERED"
@@ -345,7 +345,7 @@ EOF
 if [ "$MODE" = agent ]; then
   note "remote run as seen through the Runs API (the agent home's model is working on it):"
 else
-  note "remote run as seen through the Runs API (no model is configured in the judge homes):"
+  note "remote run as seen through the Runs API (no model is configured in the demo homes):"
 fi
 run "$HL" baton status "$ID"
 
@@ -371,7 +371,7 @@ if ls "$WORK/remote/session"/*.md >/dev/null 2>&1; then
   grep -h -E '^### Tool' "$WORK/remote/session"/*.md | sed 's/^### Tool[^A-Za-z_]*/     /' | head -n 60
   note "pre_verify reminders it received: $(grep -h -c 'Run baton_check for baton' "$WORK/remote/session"/*.md | awk '{s += $1} END {print s + 0}')"
 else
-  note "(session export unavailable, see judge/.work/remote/export.log)"
+  note "(session export unavailable, see demo/.work/remote/export.log)"
 fi
 else
 step "5. Remote: receive, simulated agent fix, check, return (hermes baton work, no model)"
@@ -405,7 +405,7 @@ git -C "$PROJ" worktree add --quiet "$WORK/landed" "baton/$ID"
 git -C "$PROJ" worktree remove --force "$WORK/landed"
 
 step "7. RED path: nobody fixes it, the remote returns FAILED and land refuses"
-(cd "$PROJ" && run "$HL" baton pass "Make the suite pass (red path: no fix is applied)" --peer judge \
+(cd "$PROJ" && run "$HL" baton pass "Make the suite pass (red path: no fix is applied)" --peer box \
    --done-when "python -m pytest -q" --no-trigger) | tee "$WORK/pass2.out"
 ID2=$(sed -n 's/^baton \([0-9A-HJKMNP-TV-Z]\{26\}\): .*/\1/p' "$WORK/pass2.out" | head -n 1)
 [ -n "$ID2" ] || die "no id for the red baton"
@@ -417,7 +417,7 @@ git -C "$PROJ" show-ref --verify -q "refs/heads/baton/$ID2" && die "a failed bat
 note "no local branch baton/$ID2 was created"
 
 step "8. ALLOWLIST: the sender cannot make the remote run an arbitrary command"
-(cd "$PROJ" && run "$HL" baton pass "Run my command" --peer judge --done-when "sh -c 'echo pwned'" --no-trigger) \
+(cd "$PROJ" && run "$HL" baton pass "Run my command" --peer box --done-when "sh -c 'echo pwned'" --no-trigger) \
   | tee "$WORK/pass3.out"
 ID3=$(sed -n 's/^baton \([0-9A-HJKMNP-TV-Z]\{26\}\): .*/\1/p' "$WORK/pass3.out" | head -n 1)
 rc=0; run "$HR" baton work "$ID3" || rc=$?
@@ -441,6 +441,6 @@ note "port $PORT closed, gateway stopped; last lines of its log:"
 grep -E "Exiting|disconnected|shutdown" "$WORK/remote/gateway.log" | tail -n 3 | sed 's/^/   /' || true
 
 who_fixed="simulated fix"; [ "$MODE" = agent ] && who_fixed="fixed by a real remote agent"
-printf '\nJUDGE PATH OK: baton %s landed verified (%s), red baton %s refused, allowlist enforced, local repo untouched.\n' "$ID" "$who_fixed" "$ID2"
+printf '\nDEMO OK: baton %s landed verified (%s), red baton %s refused, allowlist enforced, local repo untouched.\n' "$ID" "$who_fixed" "$ID2"
 [ "$MODE" = agent ] && printf 'The agent home %s keeps the baton plugin (role=remote); remove it with: hermes plugins uninstall baton\n' "$AGENT_HOME"
-printf 'Inspect: judge/.work/project (git log baton/%s), judge/.work/bin/hermes-{local,remote}. Clean up: judge/teardown.sh\n' "$ID"
+printf 'Inspect: demo/.work/project (git log baton/%s), demo/.work/bin/hermes-{local,remote}. Clean up: demo/teardown.sh\n' "$ID"

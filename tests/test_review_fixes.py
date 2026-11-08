@@ -1,4 +1,4 @@
-"""Regression tests for the adversarial review of Baton (BT-FIX): ids, check policy, check env and
+"""Regression tests for the adversarial review of Baton: ids, check policy, check env and
 sandbox, check deadline, and the remote receive path."""
 
 from __future__ import annotations

@@ -31,7 +31,7 @@ baton id, same `Idempotency-Key`, same remote run).
 
 ## Try it
 
-**One machine, no second box, nothing paid:** `bash judge/run-local.sh` runs the whole loop with two
+**One machine, no second box, nothing paid:** `bash demo/run-local.sh` runs the whole loop with two
 real, isolated Hermes v0.23.0 instances (12 to 20 minutes on a cold cache, mostly dependency downloads, see
 [Verify in 5 minutes](#verify-in-5-minutes)).
 
@@ -81,22 +81,22 @@ deterministic) or from an agent session.
 ## Verify in 5 minutes
 
 ```
-bash judge/run-local.sh
-bash judge/teardown.sh
+bash demo/run-local.sh
+bash demo/teardown.sh
 ```
 
 You should see, at the end:
 
 ```
-JUDGE PATH OK: baton <id> landed verified, red baton <id> refused, allowlist enforced, local repo untouched.
+DEMO OK: baton <id> landed verified, red baton <id> refused, allowlist enforced, local repo untouched.
 ```
 
 Needs: Linux, Hermes Agent v0.23.0 installed (checkout at `~/.hermes/hermes-agent`, or set
 `HERMES_AGENT_DIR` and `HERMES_PYTHON`), `git`, `curl`, `ss`, `setsid`, `sha256sum`, `uv` or
-`python3 -m venv`, network access for the first install, and port 8652 free (`BATON_JUDGE_PORT`
+`python3 -m venv`, network access for the first install, and port 8652 free (`BATON_DEMO_PORT`
 picks 8653 to 8655). No model, no provider key: nothing paid can run.
 
-What it does, all under `judge/.work/`:
+What it does, all under `demo/.work/`:
 
 - creates two fresh Hermes homes, "local" and "remote", each with its own `HERMES_HOME`, `HOME`,
   gateway lock dir and XDG dirs, `GATEWAY_MULTIPLEX_PROFILES=false`, every process started from
@@ -104,7 +104,7 @@ What it does, all under `judge/.work/`:
 - installs the plugin in both homes with `hermes plugins install file://<git snapshot of this tree>
   --enable --yes-deps`, registers the remote with `hermes peer add`, and starts the remote gateway
   with its API server on `127.0.0.1:8652` and a random key;
-- copies `judge/sample/` (a calculator whose `mean()` divides by `len - 1`) into a git repo with a
+- copies `demo/sample/` (a calculator whose `mean()` divides by `len - 1`) into a git repo with a
   stash entry, a staged change, an unstaged change and an untracked file;
 - **green path**: `hermes baton pass ... --done-when "python -m pytest -q"` (real `POST /v1/runs`,
   then the same request again to show `replayed=True` with the same run id), remote `hermes baton work`
@@ -127,15 +127,15 @@ Measured on the author's machine (Linux, 8 Nov 2026, two runs): the first plugin
 409 s and 631 s, the second home 56 to 86 s, the API server extra 103 to 390 s, and the baton steps
 themselves about 2 to 3 minutes. Most of that time is Hermes
 building each fresh home's dependency environment when the plugin is enabled; both homes share one uv
-cache, and `BATON_JUDGE_UV_CACHE=<dir>` keeps it between runs (`teardown.sh` never deletes it).
+cache, and `BATON_DEMO_UV_CACHE=<dir>` keeps it between runs (`teardown.sh` never deletes it).
 
-`bash judge/run-docker.sh` runs the same scenario with the remote in the official image
+`bash demo/run-docker.sh` runs the same scenario with the remote in the official image
 `nousresearch/hermes-agent:v0.23.0` (1.1 GB to pull, 4.5 GB on disk; the pull took about 15 min on
-the author's link). Tested on 7 Nov 2026: `JUDGE PATH OK` in 130 s with the image already pulled and
+the author's link). Tested on 7 Nov 2026: `DEMO OK` in 130 s with the image already pulled and
 a warm uv cache. bubblewrap is not usable inside that container, so there the check line reads
 `sandbox off: bubblewrap missing or unusable here` (see the honest limit under Disclosures).
 
-**With a real remote agent.** `BATON_JUDGE_AGENT_HOME=<a Hermes home> bash judge/run-agent.sh` runs the
+**With a real remote agent.** `BATON_DEMO_AGENT_HOME=<a Hermes home> bash demo/run-agent.sh` runs the
 same scenario, but the remote side is an existing Hermes home whose default model works (never your
 `~/.hermes`): the Runs API trigger starts a real agent run that follows the `baton-protocol` skill, and
 nobody touches the remote by hand. The API server key reaches that home's gateway through the process
@@ -149,8 +149,8 @@ stayed identical. Its tool calls, from the export of its own session: `skill_vie
 `calc.py`), `baton_check` (green, 4 passed), `baton_return`. It ran the check before finishing, so the
 `pre_verify` reminder had nothing to block in that run.
 
-Run `judge/teardown.sh` before `hermes plugins validate .`: the validator scans everything under the
-plugin directory, including the judge's throwaway venv.
+Run `demo/teardown.sh` before `hermes plugins validate .`: the validator scans everything under the
+plugin directory, including the demo's throwaway venv.
 
 Tests: `uv run --no-project --with pytest --with pytest-asyncio --with aiohttp pytest -q`
 (197 passed, no network except loopback, no model call).
@@ -206,12 +206,12 @@ Tests: `uv run --no-project --with pytest --with pytest-asyncio --with aiohttp p
 
 ## What is not covered
 
-- **Docker: tested with the judge script only** (`judge/run-docker.sh`, the remote in
+- **Docker: tested with the demo script only** (`demo/run-docker.sh`, the remote in
   `nousresearch/hermes-agent:v0.23.0` on the same machine). Inside that container bubblewrap is not
   usable, so the check runs without the sandbox there.
 - **Hermes Cloud: not verified.** Whether an instance's API port is reachable depends on the instance;
   without it, use `--no-trigger` and `hermes baton work` on the remote.
-- **Real agent: one model, one task.** `judge/run-agent.sh` was run with one free Portal model on the
+- **Real agent: one model, one task.** `demo/run-agent.sh` was run with one free Portal model on the
   sample task. That agent checked before finishing, so the `pre_verify` reminder is proven by the tests
   (`tests/test_loop.py`), not yet by a live run where a model tries to stop early.
 - macOS is not tested; Windows is not supported (POSIX process groups).
@@ -222,5 +222,5 @@ Tests: `uv run --no-project --with pytest --with pytest-asyncio --with aiohttp p
 
 ## Team
 
-- TODO(user): name, role, background, past projects or hackathons, country.
+- TODO(user): name, role, background, past projects, country.
 - TODO(user): GitHub, X and LinkedIn links.
