@@ -11,10 +11,13 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 WORK="$HERE/.work"
 
 pidfile="$WORK/remote/gateway.pid"
+# In agent mode the gateway runs on the agent home named in remote/hermes_home.
+expected_home="$WORK/remote/hermes"
+[ -f "$WORK/remote/hermes_home" ] && expected_home=$(cat "$WORK/remote/hermes_home")
 if [ -f "$pidfile" ]; then
   pid=$(cat "$pidfile")
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null \
-     && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "HERMES_HOME=$WORK/remote/hermes"; then
+     && tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "HERMES_HOME=$expected_home"; then
     echo "teardown: stopping judge gateway pid $pid (SIGTERM)"
     kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
     for _ in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done

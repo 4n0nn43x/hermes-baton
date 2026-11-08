@@ -15,6 +15,12 @@
 # BATON_JUDGE_PORT (default 8652), BATON_JUDGE_UV_CACHE (uv cache kept across runs).
 # BATON_JUDGE_REMOTE=docker (what judge/run-docker.sh sets) runs the remote in the official image
 # instead (BATON_JUDGE_IMAGE, default nousresearch/hermes-agent:v0.23.0, about 1.1 GB to pull).
+# BATON_JUDGE_REMOTE=agent (what judge/run-agent.sh sets) makes a REAL agent do the remote work: the
+# remote side uses BATON_JUDGE_AGENT_HOME, an existing Hermes home whose default model works (never
+# ~/.hermes), with the judge's private HOME, lock dir and XDG dirs. The plugin is installed and
+# enabled there (role=remote), the API server settings reach its gateway through the environment
+# only, and the model receives, fixes, checks and returns the baton on its own
+# (BATON_JUDGE_AGENT_TIMEOUT, default 1200 s). Model calls are billed to that home's provider.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -27,6 +33,8 @@ GIT_ID=(-c user.name=judge -c user.email=judge@localhost -c commit.gpgsign=false
 FIX_FROM='len(values) - 1'
 FIX_TO='len(values)'
 MODE=${BATON_JUDGE_REMOTE:-local}
+AGENT_HOME=${BATON_JUDGE_AGENT_HOME:-}
+AGENT_TIMEOUT=${BATON_JUDGE_AGENT_TIMEOUT:-1200}
 IMAGE=${BATON_JUDGE_IMAGE:-nousresearch/hermes-agent:v0.23.0}
 CNAME=baton-judge-remote
 if [ "$MODE" = docker ]; then   # paths as the remote sees them, and the host path of its workspace
@@ -58,6 +66,16 @@ fi
 note "Hermes: $(git -C "$HERMES_AGENT_DIR" describe --tags 2>/dev/null || echo unknown) at $HERMES_AGENT_DIR"
 note "python: $HERMES_PYTHON"
 for tool in git curl ss setsid sha256sum; do command -v "$tool" >/dev/null || die "missing tool: $tool"; done
+case "$MODE" in
+  local|docker) ;;
+  agent)
+    [ -n "$AGENT_HOME" ] && [ -f "$AGENT_HOME/config.yaml" ] \
+      || die "BATON_JUDGE_REMOTE=agent needs BATON_JUDGE_AGENT_HOME=<a Hermes home whose default model works>"
+    AGENT_HOME=$(realpath "$AGENT_HOME")
+    case "$AGENT_HOME/" in "$(realpath -m "$HOME/.hermes")/"*) die "refusing to use your own ~/.hermes as the agent home";; esac
+    note "remote: REAL agent in the Hermes home $AGENT_HOME (its default model does the work)" ;;
+  *) die "BATON_JUDGE_REMOTE must be local, docker or agent" ;;
+esac
 if [ "$MODE" = docker ]; then
   command -v docker >/dev/null || die "docker is not installed"
   if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -97,6 +115,27 @@ if [ "$MODE" = docker ]; then
 exec docker exec -i -u hermes -e PATH=/opt/data/checkenv/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:$SYS_PATH \\
   $CNAME hermes "\$@"
 EOF
+fi
+if [ "$MODE" = agent ]; then
+  printf '%s\n' "$AGENT_HOME" > "$WORK/remote/hermes_home"   # read by teardown.sh
+  printf '%s' "$KEY" > "$WORK/remote/api.key"                # umask 077: owner only
+  cat > "$WORK/bin/hermes-remote" <<EOF
+#!/bin/sh
+# Hermes in the agent home $AGENT_HOME, with the judge's private HOME, lock dir and XDG dirs.
+# The API server key goes from a 0600 file into the process environment (never argv, never its .env).
+exec env -i HOME="$WORK/remote/home" USER="\${USER:-judge}" LANG=C.UTF-8 TERM=dumb NO_COLOR=1 \\
+  PATH="$WORK/checkenv/bin:$SYS_PATH" \\
+  HERMES_HOME="$AGENT_HOME" HERMES_GATEWAY_LOCK_DIR="$WORK/remote/locks" \\
+  XDG_STATE_HOME="$WORK/remote/xdg/state" XDG_CONFIG_HOME="$WORK/remote/xdg/config" \\
+  XDG_CACHE_HOME="$WORK/remote/xdg/cache" XDG_DATA_HOME="$WORK/remote/xdg/data" \\
+  GATEWAY_MULTIPLEX_PROFILES=false HERMES_DISABLE_LAZY_INSTALLS=1 PYTHONDONTWRITEBYTECODE=1 \\
+  API_SERVER_HOST=127.0.0.1 API_SERVER_PORT=$PORT BATON_JUDGE_KEY_FILE="$WORK/remote/api.key" \\
+  PYTHONPATH="$HERMES_AGENT_DIR" "$HERMES_PYTHON" -c 'import os, runpy, sys
+os.environ["API_SERVER_KEY"] = open(os.environ.pop("BATON_JUDGE_KEY_FILE")).read().strip()
+sys.argv[0] = "hermes"
+runpy.run_module("hermes_cli.main", run_name="__main__", alter_sys=True)' "\$@"
+EOF
+  chmod 700 "$WORK/bin/hermes-remote"
 fi
 HL="$WORK/bin/hermes-local"
 HR="$WORK/bin/hermes-remote"
@@ -200,6 +239,7 @@ step "2. Install the plugin in both homes (file:// snapshot) and configure them"
 UV_SHARED=${BATON_JUDGE_UV_CACHE:-$WORK/uv-cache}
 mkdir -p "$UV_SHARED"
 for side in local remote; do
+  [ "$MODE/$side" = agent/remote ] && continue   # the agent home keeps its own cache
   mkdir -p "$WORK/$side/hermes/cache"
   ln -sfn "$UV_SHARED" "$WORK/$side/hermes/cache/uv"
 done
@@ -228,6 +268,8 @@ if [ "$MODE" = local ]; then
   umask 077
   printf 'API_SERVER_KEY=%s\nAPI_SERVER_HOST=127.0.0.1\nAPI_SERVER_PORT=%s\n' "$KEY" "$PORT" >> "$WORK/remote/hermes/.env"
   umask 022
+fi
+if [ "$MODE" != docker ]; then
   # A fresh home's environment has no extras; the API server needs aiohttp (the `messaging` extra).
   t0=$SECONDS
   "$HR" pm install --extra messaging > "$WORK/remote/pm-extra.log" 2>&1 \
@@ -300,9 +342,38 @@ print(f"   POST /v1/runs again -> run_id {r['run_id']} replayed={r['replayed']} 
 if r["run_id"] != first or not r["replayed"]:
     sys.exit("idempotent replay not observed")
 EOF
-note "remote run as seen through the Runs API (no model is configured in the judge homes):"
+if [ "$MODE" = agent ]; then
+  note "remote run as seen through the Runs API (the agent home's model is working on it):"
+else
+  note "remote run as seen through the Runs API (no model is configured in the judge homes):"
+fi
 run "$HL" baton status "$ID"
 
+if [ "$MODE" = agent ]; then
+step "5. Remote AGENT: the model receives, fixes, checks and returns (pre_verify blocks an early finish)"
+note "nobody touches the remote by hand; waiting up to ${AGENT_TIMEOUT}s (status every 20 s)"
+t0=$SECONDS; state=""
+while [ $((SECONDS - t0)) -lt "$AGENT_TIMEOUT" ]; do
+  "$HL" baton status "$ID" > "$WORK/status.out" 2>&1 || true
+  state=$(awk 'NR==1 {print $2}' "$WORK/status.out")
+  case "$state" in RETURNED|FAILED|CANCELLED|LANDED) break ;; esac
+  note "$((SECONDS - t0))s: $state; $(grep -o 'remote run [^ ]*: [a-z_]*' "$WORK/status.out" | head -n 1)"
+  sleep 20
+done
+sed 's/^/   /' "$WORK/status.out"
+[ "$state" = RETURNED ] || die "the remote agent did not return the baton in time (state: ${state:-unknown})"
+grep -q 'result: verified' "$WORK/status.out" || die "the remote agent returned without a verified check"
+note "the remote agent returned VERIFIED after $((SECONDS - t0))s"
+"$HR" sessions export "$WORK/remote/session" --session-id "baton-$(printf '%s' "$ID" | tr 'A-Z' 'a-z')" \
+  --format md > "$WORK/remote/export.log" 2>&1 || true
+if ls "$WORK/remote/session"/*.md >/dev/null 2>&1; then
+  note "its tool calls, in order (from hermes sessions export of its session):"
+  grep -h -E '^### Tool' "$WORK/remote/session"/*.md | sed 's/^### Tool[^A-Za-z_]*/     /' | head -n 60
+  note "pre_verify reminders it received: $(grep -h -c 'Run baton_check for baton' "$WORK/remote/session"/*.md | awk '{s += $1} END {print s + 0}')"
+else
+  note "(session export unavailable, see judge/.work/remote/export.log)"
+fi
+else
 step "5. Remote: receive, simulated agent fix, check, return (hermes baton work, no model)"
 run "$HR" baton work "$ID" --receive-only
 WT="$R_WS_HOST/baton-$ID"
@@ -319,6 +390,7 @@ else
   git -C "$WT" --no-pager diff --stat
 fi
 run "$HR" baton work "$ID" --summary "mean() divided by len-1; divide by len"
+fi
 
 step "6. Local: status, land, and proof that the local repo was not touched"
 run "$HL" baton status "$ID"
@@ -326,6 +398,7 @@ run "$HL" baton land "$ID"
 run git -C "$PROJ" --no-optional-locks status --short
 run git -C "$PROJ" --no-pager log --oneline --decorate "baton/$ID"
 run git -C "$PROJ" --no-pager diff --stat HEAD "baton/$ID"
+[ "$MODE" = agent ] && run git -C "$PROJ" --no-pager diff HEAD "baton/$ID" -- calc.py
 note "the landed branch passes the check locally too:"
 git -C "$PROJ" worktree add --quiet "$WORK/landed" "baton/$ID"
 (cd "$WORK/landed" && env -i PATH="$WORK/checkenv/bin:$SYS_PATH" PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider 2>&1 | tail -1)
@@ -367,5 +440,7 @@ if ss -ltnH "sport = :$PORT" | grep -q .; then die "port $PORT still open"; fi
 note "port $PORT closed, gateway stopped; last lines of its log:"
 grep -E "Exiting|disconnected|shutdown" "$WORK/remote/gateway.log" | tail -n 3 | sed 's/^/   /' || true
 
-printf '\nJUDGE PATH OK: baton %s landed verified, red baton %s refused, allowlist enforced, local repo untouched.\n' "$ID" "$ID2"
+who_fixed="simulated fix"; [ "$MODE" = agent ] && who_fixed="fixed by a real remote agent"
+printf '\nJUDGE PATH OK: baton %s landed verified (%s), red baton %s refused, allowlist enforced, local repo untouched.\n' "$ID" "$who_fixed" "$ID2"
+[ "$MODE" = agent ] && printf 'The agent home %s keeps the baton plugin (role=remote); remove it with: hermes plugins uninstall baton\n' "$AGENT_HOME"
 printf 'Inspect: judge/.work/project (git log baton/%s), judge/.work/bin/hermes-{local,remote}. Clean up: judge/teardown.sh\n' "$ID"

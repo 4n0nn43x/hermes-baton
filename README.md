@@ -32,7 +32,7 @@ baton id, same `Idempotency-Key`, same remote run).
 ## Try it
 
 **One machine, no second box, nothing paid:** `bash judge/run-local.sh` runs the whole loop with two
-real, isolated Hermes v0.23.0 instances ({{COLD}} on a cold cache, see
+real, isolated Hermes v0.23.0 instances (12 to 20 minutes on a cold cache, mostly dependency downloads, see
 [Verify in 5 minutes](#verify-in-5-minutes)).
 
 **Real use, two machines.** Requirements: Hermes Agent v0.23.0 on both, git, and a bare git
@@ -123,7 +123,9 @@ Real output of that run (lines copied from the log, only the absolute prefix of 
 
 ![remote: red check, fix, green check, returned verified; a non-allowlisted check refused](docs/screens/02-remote-check.png)
 
-Measured on the author's machine (Linux, {{DATE}}): {{TIMINGS}} Most of that time is Hermes
+Measured on the author's machine (Linux, 8 Nov 2026, two runs): the first plugin enable in a fresh home took
+409 s and 631 s, the second home 56 to 86 s, the API server extra 103 to 390 s, and the baton steps
+themselves about 2 to 3 minutes. Most of that time is Hermes
 building each fresh home's dependency environment when the plugin is enabled; both homes share one uv
 cache, and `BATON_JUDGE_UV_CACHE=<dir>` keeps it between runs (`teardown.sh` never deletes it).
 
@@ -133,11 +135,25 @@ the author's link). Tested on 7 Nov 2026: `JUDGE PATH OK` in 130 s with the imag
 a warm uv cache. bubblewrap is not usable inside that container, so there the check line reads
 `sandbox off: bubblewrap missing or unusable here` (see the honest limit under Disclosures).
 
+**With a real remote agent.** `BATON_JUDGE_AGENT_HOME=<a Hermes home> bash judge/run-agent.sh` runs the
+same scenario, but the remote side is an existing Hermes home whose default model works (never your
+`~/.hermes`): the Runs API trigger starts a real agent run that follows the `baton-protocol` skill, and
+nobody touches the remote by hand. The API server key reaches that home's gateway through the process
+environment only, and the plugin stays installed there afterwards (`hermes plugins uninstall baton`
+removes it). Model calls are billed to that home's provider.
+
+Tested on 8 Nov 2026 with a free Nous Portal model (`meituan/longcat-2.5:free`, $0): 129 s after the
+trigger the remote agent had returned VERIFIED, the local side landed the branch, and the local repo
+stayed identical. Its tool calls, from the export of its own session: `skill_view`, `baton_receive`,
+`terminal` (`ls -la` of the worktree), `read_file` x6, `patch` (`len(values) - 1` to `len(values)` in
+`calc.py`), `baton_check` (green, 4 passed), `baton_return`. It ran the check before finishing, so the
+`pre_verify` reminder had nothing to block in that run.
+
 Run `judge/teardown.sh` before `hermes plugins validate .`: the validator scans everything under the
 plugin directory, including the judge's throwaway venv.
 
 Tests: `uv run --no-project --with pytest --with pytest-asyncio --with aiohttp pytest -q`
-({{TESTS}}, no network except loopback, no model call).
+(197 passed, no network except loopback, no model call).
 
 ## Disclosures
 
@@ -195,9 +211,9 @@ Tests: `uv run --no-project --with pytest --with pytest-asyncio --with aiohttp p
   usable, so the check runs without the sandbox there.
 - **Hermes Cloud: not verified.** Whether an instance's API port is reachable depends on the instance;
   without it, use `--no-trigger` and `hermes baton work` on the remote.
-- **The real-agent variant was not run.** The judge homes have no model configured, so the judge path
-  scripts the one-line fix that the remote model would write. With a model in the remote home, the
-  Runs API trigger starts a real agent run that follows the `baton-protocol` skill.
+- **Real agent: one model, one task.** `judge/run-agent.sh` was run with one free Portal model on the
+  sample task. That agent checked before finishing, so the `pre_verify` reminder is proven by the tests
+  (`tests/test_loop.py`), not yet by a live run where a model tries to stop early.
 - macOS is not tested; Windows is not supported (POSIX process groups).
 - No Desktop surface (CLI, slash command, tools and skills only).
 - The check executes the code you send with the remote user's rights (see the honest limit above):

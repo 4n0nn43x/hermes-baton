@@ -33,7 +33,7 @@ local.py        pass / status / land / list / cancel orchestration              
 remote.py       receive / check / return / work + pre_verify decision                    (BT-B)
 skills/baton-protocol/SKILL.md   instructions for the REMOTE agent                       (BT-B)
 skills/baton/SKILL.md            usage skill for the LOCAL agent                          (BT-B)
-judge/          run-local.sh, run-docker.sh, sample/ (project with a red test), teardown.sh (BT-B)
+judge/          run-local.sh, run-docker.sh, run-agent.sh, sample/ (project with a red test), teardown.sh (BT-B)
 tests/          pytest; core tests never import Hermes
 README.md       catalog page
 ```
@@ -198,8 +198,11 @@ Never writes Hermes config, never changes approvals, never uses yolo.
 (`file://...`), passes a baton with `--done-when "python -m pytest -q"`, runs `hermes baton work <id>`
 in the remote home (no model), lands, and prints `git status` (unchanged) and `git log baton/<id>`.
 `judge/run-docker.sh`: same with the remote in `nousresearch/hermes-agent:v0.23.0` (warn: 1.1 GB pull).
-`judge/teardown.sh` removes everything it created. A real-agent variant runs when the remote home has
-a model configured (no `--no-agent`).
+`judge/teardown.sh` removes everything it created. `judge/run-agent.sh` is the real-agent variant:
+`BATON_JUDGE_AGENT_HOME` names an existing Hermes home whose default model works (never `~/.hermes`),
+the plugin is installed there with role remote, the API server key reaches its gateway through the
+process environment only, and the model does step 5 itself (receive, fix, check, return) under a
+timeout (`BATON_JUDGE_AGENT_TIMEOUT`, 1200 s).
 
 ## 10. Tests (target >= 100, green, no network except loopback, no model calls)
 
