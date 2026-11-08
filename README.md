@@ -1,5 +1,7 @@
 # Baton
 
+![Baton: hand your session and repo to your remote Hermes, land a tested branch](docs/banner.png)
+
 Hand your session and your repository to your remote Hermes agent (Hermes Cloud, a VPS or a Docker
 container), close the laptop, and land a tested branch the next morning.
 
@@ -29,8 +31,12 @@ baton id, same `Idempotency-Key`, same remote run).
 
 ## Try it
 
-Requirements: Hermes Agent v0.23.0 on both machines, git, and a bare git repository both machines can
-push to and fetch from (an SSH URL, or a path on a shared volume).
+**One machine, no second box, nothing paid:** `bash judge/run-local.sh` runs the whole loop with two
+real, isolated Hermes v0.23.0 instances ({{COLD}} on a cold cache, see
+[Verify in 5 minutes](#verify-in-5-minutes)).
+
+**Real use, two machines.** Requirements: Hermes Agent v0.23.0 on both, git, and a bare git
+repository both machines can push to and fetch from (an SSH URL, or a path on a shared volume).
 
 1. Install the plugin on both machines:
    ```
@@ -74,12 +80,21 @@ deterministic) or from an agent session.
 
 ## Verify in 5 minutes
 
-One command runs the whole path on one machine with **two real, isolated Hermes v0.23.0 instances**
-and no model (nothing paid can run):
+```
+bash judge/run-local.sh
+bash judge/teardown.sh
+```
+
+You should see, at the end:
 
 ```
-judge/run-local.sh      # then: judge/teardown.sh
+JUDGE PATH OK: baton <id> landed verified, red baton <id> refused, allowlist enforced, local repo untouched.
 ```
+
+Needs: Linux, Hermes Agent v0.23.0 installed (checkout at `~/.hermes/hermes-agent`, or set
+`HERMES_AGENT_DIR` and `HERMES_PYTHON`), `git`, `curl`, `ss`, `setsid`, `sha256sum`, `uv` or
+`python3 -m venv`, network access for the first install, and port 8652 free (`BATON_JUDGE_PORT`
+picks 8653 to 8655). No model, no provider key: nothing paid can run.
 
 What it does, all under `judge/.work/`:
 
@@ -102,49 +117,92 @@ What it does, all under `judge/.work/`:
   repo before and after (must be identical), stops the gateway with SIGTERM and checks the port is
   closed.
 
-Measured on the author's machine (Linux, slow link): a fresh Hermes home prepares its own
-dependency environment when the plugin is enabled, which took 376 s for the first home on an empty
-cache and 48 s for the second (both homes share one uv cache). With that cache kept between runs
-(`BATON_JUDGE_UV_CACHE=<dir>`), the whole script took 2 min 16 s. Variables: `HERMES_AGENT_DIR`, `HERMES_PYTHON`, `BATON_JUDGE_PORT`
-(8652 to 8655), `BATON_JUDGE_UV_CACHE`.
+Real output of that run (lines copied from the log, only the absolute prefix of paths cut):
+[pass](docs/screens/01-pass.png), [remote check](docs/screens/02-remote-check.png),
+[land](docs/screens/03-land.png).
 
-`judge/run-docker.sh` runs the same scenario with the remote in `nousresearch/hermes-agent:v0.23.0`
-(about 1.1 GB to pull). **Not tested**: the pull did not finish within 10 minutes on the author's link.
+![remote: red check, fix, green check, returned verified; a non-allowlisted check refused](docs/screens/02-remote-check.png)
+
+Measured on the author's machine (Linux, {{DATE}}): {{TIMINGS}} Most of that time is Hermes
+building each fresh home's dependency environment when the plugin is enabled; both homes share one uv
+cache, and `BATON_JUDGE_UV_CACHE=<dir>` keeps it between runs (`teardown.sh` never deletes it).
+
+`bash judge/run-docker.sh` runs the same scenario with the remote in the official image
+`nousresearch/hermes-agent:v0.23.0` (1.1 GB to pull, 4.5 GB on disk; the pull took about 15 min on
+the author's link). Tested on 7 Nov 2026: `JUDGE PATH OK` in 130 s with the image already pulled and
+a warm uv cache. bubblewrap is not usable inside that container, so there the check line reads
+`sandbox off: bubblewrap missing or unusable here` (see the honest limit under Disclosures).
 
 Run `judge/teardown.sh` before `hermes plugins validate .`: the validator scans everything under the
 plugin directory, including the judge's throwaway venv.
 
 Tests: `uv run --no-project --with pytest --with pytest-asyncio --with aiohttp pytest -q`
-(195 passed, no network except loopback, no model call).
+({{TESTS}}, no network except loopback, no model call).
 
 ## Disclosures
 
-- **git pushes** to the shared remote you configure (`remote_git`): `refs/baton/<id>/*` from your
-  laptop, `refs/heads/baton/<id>` and the result/status refs from the remote. Nothing is pushed to
-  your project's own remotes.
-- **HTTP** to the peer you registered (`hermes peer add`): `/health`, `/v1/capabilities`,
-  `/api/sessions`, `/v1/runs`. The bearer key goes only to that origin (a redirect to another origin
-  is refused); it is never logged or stored by Baton.
-- **Subprocesses**: `git` (argv only, sanitized environment, timeouts) and
-  `hermes sessions export --redact` for the transcript of the session you pass.
-- **The check runs on the remote machine with the rights of the Hermes user**: the code of the
-  repository you send (conftest.py, Makefile, npm scripts) runs as is. Baton gives it an empty
-  throwaway HOME, no HERMES_* variable and no key, only runs argv that the remote's `allowed_checks`
-  allows (followed by safe flags and relative paths), and, when bubblewrap works on that machine,
-  hides the Hermes home and kills every process of the check at the end. Without bubblewrap, that
-  code can read `~/.hermes` by absolute path: only accept batons from your own machines.
-- The outgoing snapshot is scanned for secrets and the pass is **blocked** (never masked) on a
-  finding; symlinks that point outside the repository are refused too (`unsafe_snapshot`).
+- **Git.** `pass` writes a snapshot commit (built with a temporary index) and its package
+  (`.baton/<id>/`: manifest, transcript, SHA256SUMS) into your repository's object store, and pushes
+  `refs/baton/<id>/in` and a status ref to the shared remote you configure (`remote_git`). The remote
+  pushes `refs/heads/baton/<id>` and the result and status refs there. Nothing is pushed to your
+  project's own remotes. Your repository only gets `refs/baton/<id>/*` and, on `land`, the branch
+  `baton/<id>`.
+- **What the snapshot holds.** Tracked changes and untracked files not ignored by `.gitignore`. A
+  blocking secret scan runs first: file names (`.env`, `.env.*` except `.env.example`, `.env.sample`
+  and `.env.template`, `auth.json`, `id_rsa`, `id_ed25519`, `credentials.json`, `*.pem`, `*.p12`)
+  and content (private key blocks, `sk-` provider keys, GitHub, AWS, Slack and Telegram tokens,
+  high-entropy `token=`/`password=` values). A finding **blocks** the pass (never masked, no
+  override flag). Symlinks that resolve outside the repository are refused too (`unsafe_snapshot`),
+  at send and again by the remote at receive, which then deletes the worktree. Submodules are refused.
+- **HTTP** to the peer you registered (`hermes peer add`, or the `peers` setting): `GET /health`
+  (doctor only), `GET /v1/capabilities`, `POST /api/sessions`, `POST /v1/runs` with
+  `Idempotency-Key`, `GET /v1/runs/<id>`, and `POST /v1/runs/<id>/stop` on cancel. It carries the
+  task and a redacted transcript. The bearer key is read through Hermes's secret scope, goes only to
+  that origin (a redirect to another origin is refused), and is never logged or stored by Baton.
+- **Transcript.** `hermes sessions export --redact`, then an extra pass with the scan patterns; last
+  20 turns, tool outputs cut to 2 KB, capped at 64 KB. A pass from the shell sends the task only.
+- **Subprocesses.** `git` (argv only, sanitized environment, timeouts), `hermes sessions export`, and
+  on the remote the check plus a one-time `bwrap ... true` probe.
+- **The check on the remote.** The remote owns the policy; the manifest cannot widen it. The argv
+  must be exactly an entry of the remote's `allowed_checks` (default `python -m pytest`, `pytest`,
+  `npm test`, `make test`, `cargo test`, `go test`), followed only by safe flags
+  (`-q -qq -v -vv -x -s --quiet --verbose --exitfirst`, `-p no:<plugin>`) and relative paths that stay
+  inside the worktree once symlinks are resolved. Anything else (`--basetemp=/x`, `-c file`,
+  `-p plugin`, an absolute path, `make --eval=...`, `sh -c ...`) is refused with `check_not_allowed`
+  before anything runs. The check runs without a shell, in its own process group, killed at
+  `check_timeout_s` (900 s by default), with an empty throwaway `HOME` (XDG dirs land in it), no
+  `HERMES_*` variable and no provider key: only `PATH` (Hermes's own tool directories moved last),
+  locale, `TZ`, `TMPDIR`, `USER`, `LOGNAME`, `TERM`, and `RUSTUP_HOME`, `CARGO_HOME`, `GOPATH`
+  (pointing at the real toolchain dirs when they exist) are passed.
+- **Sandbox (`sandbox: auto`, the default).** When bubblewrap works on the remote, the check also runs
+  under `bwrap`: `~/.hermes` and `$HERMES_HOME` are masked by empty tmpfs, the workspace stays
+  writable, and the check has its own pid namespace, so every process it started dies with it. The
+  check line says `sandbox bwrap` or `off: <reason>`. **Honest limit:** without a usable bubblewrap,
+  or with `sandbox: off`, the code of the repository you send (conftest.py, Makefile, npm scripts)
+  runs with the remote user's rights and can read `~/.hermes` by absolute path. Only accept batons
+  from your own machines.
+- **Paths.** Baton's data lives under `hermes_constants.get_hermes_home()/plugin-data/baton`; on the
+  remote, a cache clone, throwaway worktrees and check logs live under `workspace` (default
+  `<plugin data>/work`). `remote.py` also locates `~/.hermes` and `$HERMES_HOME`, only to hide them
+  from the check and to reorder its `PATH`: Baton never reads or writes files there.
+- **Never:** writes Hermes config, changes approvals, uses yolo mode, or reads `.env` files. **No
+  telemetry.**
 
 ## What is not covered
 
-- Hermes Cloud: whether an instance's API port is reachable depends on the instance; without it,
-  use `--no-trigger` and `hermes baton work` on the remote.
+- **Docker: tested with the judge script only** (`judge/run-docker.sh`, the remote in
+  `nousresearch/hermes-agent:v0.23.0` on the same machine). Inside that container bubblewrap is not
+  usable, so the check runs without the sandbox there.
+- **Hermes Cloud: not verified.** Whether an instance's API port is reachable depends on the instance;
+  without it, use `--no-trigger` and `hermes baton work` on the remote.
+- **The real-agent variant was not run.** The judge homes have no model configured, so the judge path
+  scripts the one-line fix that the remote model would write. With a model in the remote home, the
+  Runs API trigger starts a real agent run that follows the `baton-protocol` skill.
+- macOS is not tested; Windows is not supported (POSIX process groups).
 - No Desktop surface (CLI, slash command, tools and skills only).
-- The check executes the code you send with the remote user's rights: Baton is made for your own
-  machines, not for running other people's batons.
-- The real-agent variant (the remote model writes the fix itself) needs a model configured in the
-  remote home; the judge homes have none, so the judge path scripts the fix instead.
+- The check executes the code you send with the remote user's rights (see the honest limit above):
+  Baton is made for your own machines, not for running other people's batons.
+- A cancel that lands between the remote's last status read and its push is not seen by that return.
 
 ## Team
 

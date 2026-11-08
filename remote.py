@@ -35,6 +35,9 @@ TOOLCHAIN_DIRS = {"RUSTUP_HOME": ".rustup", "CARGO_HOME": ".cargo", "GOPATH": "g
 # Extra arguments a check may add after its allowlisted entry, besides relative paths in the worktree.
 SAFE_FLAGS = frozenset({"-q", "-qq", "-v", "-vv", "-x", "-s", "--quiet", "--verbose", "--exitfirst"})
 SANDBOX_BASE = ("--dev-bind", "/", "/", "--proc", "/proc", "--unshare-pid", "--die-with-parent")
+# Subtrees of a Hermes home that hold Hermes's own tools (store, environments, checkout): moved last
+# on the check's PATH. The sandbox still hides the whole home.
+HERMES_OWN_SUBDIRS = ("tools", "installs", "hermes-agent")
 TAIL_BYTES = 4096
 CACHE_EXCLUDES = "__pycache__/\n*.pyc\n.pytest_cache/\n.mypy_cache/\n.ruff_cache/\nnode_modules/\n.venv/\n"
 NUDGE = ("Run baton_check for baton {id}; finish only when it passes, or call baton_return with status "
@@ -254,12 +257,13 @@ def check_env(home: Path | str) -> dict[str, str]:
 
 
 def user_path(path: str) -> str:
-    """`path` with Hermes's own entries moved last: its Python (venv and base interpreter) and
-    anything inside a Hermes home. A Hermes process puts its tool store first (pm.install.activate),
-    so `python` would be Hermes's interpreter instead of the project's; the terminal tool reorders
-    the same way (pm.user_facing)."""
-    own = [*hermes_dirs(), Path(os.path.abspath(sys.executable)).parent.resolve(),
-           Path(sys.base_prefix).resolve() / "bin"]
+    """`path` with Hermes's own entries moved last: its Python (venv and base interpreter) and the
+    tool store, installs and checkout inside a Hermes home. A Hermes process puts its tool store
+    first (pm.install.activate), so `python` would be Hermes's interpreter instead of the project's;
+    the terminal tool reorders the same way (pm.user_facing). Only those subtrees: in the official
+    Docker image HERMES_HOME is also the user's HOME, and a venv or ~/.local/bin there is the user's."""
+    own = [*((d / sub).resolve() for d in hermes_dirs() for sub in HERMES_OWN_SUBDIRS),
+           Path(os.path.abspath(sys.executable)).parent.resolve(), Path(sys.base_prefix).resolve() / "bin"]
 
     def hermes_owned(entry: str) -> bool:
         try:

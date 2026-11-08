@@ -109,3 +109,21 @@ def test_check_path_puts_the_hermes_tool_store_last(tmp_path, monkeypatch):
     own_python = os.path.dirname(os.path.abspath(sys.executable))
     monkeypatch.setenv("PATH", os.pathsep.join([own_python, str(user)]))
     assert remote.check_env(tmp_path / "throwaway")["PATH"].split(os.pathsep) == [str(user), own_python]
+
+
+def test_check_path_keeps_user_dirs_when_the_hermes_home_is_home(tmp_path, monkeypatch):
+    """The official Docker image sets HERMES_HOME=/opt/data, which is also the hermes user's HOME: a
+    venv or ~/.local/bin there belongs to the user. The first Docker judge run got
+    `/usr/bin/python: No module named pytest` because /opt/data/checkenv/bin was moved last."""
+    from baton_plugin import remote
+
+    home = tmp_path / "data"
+    venv, local_bin = home / "checkenv" / "bin", home / ".local" / "bin"
+    tools = home / "tools" / "python-3.14" / "bin"
+    for d in (venv, local_bin, tools):
+        d.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tools), str(venv), str(local_bin), "/usr/bin"]))
+    path = remote.check_env(tmp_path / "throwaway")["PATH"].split(os.pathsep)
+    assert path == [str(venv), str(local_bin), "/usr/bin", str(tools)]

@@ -153,6 +153,26 @@ note "local test run (red on purpose):"
 (cd "$PROJ" && env -i PATH="$WORK/checkenv/bin:$SYS_PATH" PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider 2>&1 | tail -3) || true
 
 # ---------------------------------------------------------------------------------------------------
+# Set before the container starts, so an early failure never leaves it running.
+GW_PID=""
+stop_gateway() {
+  if [ "$MODE" = docker ] && docker ps -aq --filter "name=^$CNAME\$" | grep -q .; then
+    docker logs "$CNAME" > "$WORK/remote/gateway.log" 2>&1 || true
+    docker stop -t 30 "$CNAME" >/dev/null 2>&1 || true   # SIGTERM, then SIGKILL after 30 s
+    docker rm "$CNAME" >/dev/null 2>&1 || true
+  fi
+  [ -n "$GW_PID" ] || return 0
+  if kill -0 "$GW_PID" 2>/dev/null; then
+    kill -TERM -- "-$GW_PID" 2>/dev/null || kill -TERM "$GW_PID" 2>/dev/null || true
+    for _ in $(seq 1 60); do kill -0 "$GW_PID" 2>/dev/null || break; sleep 0.5; done
+    if kill -0 "$GW_PID" 2>/dev/null; then kill -KILL -- "-$GW_PID" 2>/dev/null || true; fi
+  fi
+  GW_PID=""
+  rm -f "$WORK/remote/gateway.pid"
+}
+trap stop_gateway EXIT
+trap 'exit 130' INT TERM
+
 if [ "$MODE" = docker ]; then
   step "1b. Start the remote container (gateway + API server on 127.0.0.1:$PORT)"
   mkdir -p "$WORK/remote/data"
@@ -163,6 +183,11 @@ if [ "$MODE" = docker ]; then
   run docker run -d --name "$CNAME" --env-file "$WORK/remote/docker.env" -v "$WORK/remote/data:/opt/data" \
     -v "$WORK/shared.git:/srv/shared.git" -v "$WORK/plugin:/srv/plugin:ro" -p "127.0.0.1:$PORT:8642" \
     "$IMAGE" gateway run >/dev/null
+  # The image boots with hermes as UID 10000 and remaps it to HERMES_UID during its init: an exec
+  # before that runs as 10000 and cannot write the bind-mounted /opt/data (first docker run).
+  for _ in $(seq 1 120); do
+    [ "$(docker exec "$CNAME" id -u hermes 2>/dev/null)" = "$(id -u)" ] && break; sleep 0.5
+  done
   docker exec -u hermes "$CNAME" sh -c 'python -m pytest --version >/dev/null 2>&1 ||
     { python -m venv /opt/data/checkenv && /opt/data/checkenv/bin/python -m pip install -q pytest; }' \
     || die "cannot provide python -m pytest inside the container"
@@ -215,25 +240,6 @@ note "local: hermes peer add judge --url http://127.0.0.1:$PORT --key <generated
 grep -q "^HERMES_PEER_JUDGE_KEY=" "$WORK/local/hermes/.env" || die "peer key not stored in the local home"
 
 # ---------------------------------------------------------------------------------------------------
-GW_PID=""
-stop_gateway() {
-  if [ "$MODE" = docker ] && docker ps -aq --filter "name=^$CNAME\$" | grep -q .; then
-    docker logs "$CNAME" > "$WORK/remote/gateway.log" 2>&1 || true
-    docker stop -t 30 "$CNAME" >/dev/null 2>&1 || true   # SIGTERM, then SIGKILL after 30 s
-    docker rm "$CNAME" >/dev/null 2>&1 || true
-  fi
-  [ -n "$GW_PID" ] || return 0
-  if kill -0 "$GW_PID" 2>/dev/null; then
-    kill -TERM -- "-$GW_PID" 2>/dev/null || kill -TERM "$GW_PID" 2>/dev/null || true
-    for _ in $(seq 1 60); do kill -0 "$GW_PID" 2>/dev/null || break; sleep 0.5; done
-    if kill -0 "$GW_PID" 2>/dev/null; then kill -KILL -- "-$GW_PID" 2>/dev/null || true; fi
-  fi
-  GW_PID=""
-  rm -f "$WORK/remote/gateway.pid"
-}
-trap stop_gateway EXIT
-trap 'exit 130' INT TERM
-
 step "3. Start the remote gateway (API server on 127.0.0.1:$PORT)"
 if [ "$MODE" = docker ]; then
   run docker restart "$CNAME" >/dev/null   # the gateway loads the freshly installed plugin
@@ -307,7 +313,11 @@ rc=0; run "$HR" baton work "$ID" --check-only | tee "$WORK/check1.out" || rc=$?
 grep -q "failed" "$WORK/check1.out" || die "the check did not run the tests (see its output above)"
 note "simulated agent fix (what the remote model would write): $FIX_FROM -> $FIX_TO in calc.py"
 sed -i "s/$FIX_FROM/$FIX_TO/" "$WT/calc.py"
-git -C "$WT" --no-pager diff --stat
+if [ "$MODE" = docker ]; then   # the worktree's .git points at a container path: ask the container
+  docker exec -u hermes "$CNAME" git -C "$R_WS/baton-$ID" --no-pager diff --stat
+else
+  git -C "$WT" --no-pager diff --stat
+fi
 run "$HR" baton work "$ID" --summary "mean() divided by len-1; divide by len"
 
 step "6. Local: status, land, and proof that the local repo was not touched"
