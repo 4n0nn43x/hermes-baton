@@ -221,7 +221,6 @@ Tests: `uv run --no-project --with pytest --with pytest-asyncio --with aiohttp p
   Baton is made for your own machines, not for running other people's batons.
 - A cancel that lands between the remote's last status read and its push is not seen by that return.
 
-## Team
+## Author
 
-- TODO(user): name, role, background, past projects, country.
-- TODO(user): GitHub, X and LinkedIn links.
+Maintained by [@4n0nn43x](https://github.com/4n0nn43x). Issues and pull requests are welcome.
