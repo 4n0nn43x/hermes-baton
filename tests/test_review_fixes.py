@@ -218,3 +218,24 @@ def test_return_after_the_sender_cancelled_is_refused(tmp_path):
         remote.check(bid, settings, store)
     assert exc.value.code == "baton_cancelled"
     assert remote.pre_verify(store, changed_paths=[str(settings.worktree(bid) / "a.py")]) is None
+
+
+def test_git_env_is_an_allowlist(tmp_path, monkeypatch):
+    """Catalog review of d0aa52cf: provider and peer keys must not reach git, nor what git spawns (ssh, credential
+    helpers, repository hooks). Only an allowlist, LC_*, the fixed identity and the prompt settings get through."""
+    from baton_plugin import gitutil
+
+    planted = {"ANTHROPIC_API_KEY": "sk-ant-planted", "OPENROUTER_API_KEY": "or-planted", "NOUS_API_KEY": "nous-planted",
+               "HERMES_PEER_BOX_KEY": "peer-planted", "GIT_DIR": "/elsewhere", "GIT_CONFIG_GLOBAL": "/elsewhere/cfg"}
+    kept = {"SSH_AUTH_SOCK": "/tmp/agent.sock", "LC_CTYPE": "C.UTF-8", "https_proxy": "http://proxy:3128"}
+    for k, v in {**planted, **kept}.items():
+        monkeypatch.setenv(k, v)
+    env = gitutil.git_env()
+    assert not set(planted) & set(env)
+    assert all(env[k] == v for k, v in kept.items())
+    assert env["GIT_AUTHOR_NAME"] == "baton" and env["GIT_TERMINAL_PROMPT"] == "0" and env["GIT_OPTIONAL_LOCKS"] == "0"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    gitutil.run_git(["init", "-q"], repo)
+    seen = gitutil.out(["-c", "alias.showenv=!env", "showenv"], repo)  # a process spawned by git
+    assert "planted" not in seen and "SSH_AUTH_SOCK=/tmp/agent.sock" in seen

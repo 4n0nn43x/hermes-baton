@@ -92,7 +92,7 @@ def home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def registered(plugin, home):
-    ctx = FakeCtx()
+    ctx = FakeCtx({"role": "both"})  # both halves: these tests drive the remote tools, then gate them
     plugin.register(ctx)
     return ctx
 
@@ -173,7 +173,9 @@ def test_check_fn_follows_role_at_call_time(plugin, home):
     ctx.settings["role"] = "both"
     assert check() is True
     ctx.settings["role"] = "nonsense"
-    assert check() is True  # unknown role falls back to the default "both"
+    assert check() is False  # unknown role falls back to the default "local"
+    del ctx.settings["role"]
+    assert check() is False  # no role: a laptop install does not offer the remote tools
 
 
 def test_tool_handlers_return_json_errors(registered):

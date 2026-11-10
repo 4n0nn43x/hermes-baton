@@ -21,7 +21,7 @@ provides_hooks:
 config_schema:
   role:
     type: str
-    default: both
+    default: local
     choices: [local, remote, both]
     description: "local passes batons, remote works on them (tools + pre_verify), both does both."
   remote_git:

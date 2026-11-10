@@ -21,17 +21,18 @@ IDENTITY = {
     "GIT_COMMITTER_NAME": "baton",
     "GIT_COMMITTER_EMAIL": "baton@localhost",
 }
-# Variables that would redirect git to another repository, index or object store.
-_STRIPPED = (
-    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_CEILING_DIRECTORIES",
-    "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_ASKPASS", "SSH_ASKPASS",
+# The only variables git (and what it spawns: ssh, credential helpers, repository hooks) receives from the
+# parent process, plus LC_*. Provider keys, HERMES_PEER_*_KEY and any GIT_* redirection never reach it.
+_ALLOWED = (
+    "PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "XDG_CONFIG_HOME",
+    "SSH_AUTH_SOCK", "GIT_SSH", "GIT_SSH_COMMAND",
+    "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
 )
 EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def git_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if k not in _STRIPPED and not k.startswith("GIT_CONFIG")}
+    env = {k: v for k, v in os.environ.items() if k in _ALLOWED or k.startswith("LC_")}
     env.update(IDENTITY)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_OPTIONAL_LOCKS"] = "0"  # read commands must never rewrite the user's index

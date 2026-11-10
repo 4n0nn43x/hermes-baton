@@ -135,7 +135,7 @@ resolved ONLY in `__init__.py`).
 
 ## 7. Remote side
 
-Settings (read at call time): `role` (`local`, `remote`, `both`; default `both`), `remote_git` (URL or
+Settings (read at call time): `role` (`local`, `remote`, `both`; default `local`), `remote_git` (URL or
 path of the shared bare repo), `workspace` (dir for worktrees; default `<plugin data>/work`),
 `allowed_checks` (argv a baton's check must match; default `[["python","-m","pytest"],["pytest"],["npm","test"],["make","test"],["cargo","test"],["go","test"]]`),
 `check_timeout_s` (900), `sandbox` (`auto` or `off`; default `auto`).

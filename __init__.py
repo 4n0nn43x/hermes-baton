@@ -168,8 +168,8 @@ class Baton:
         return out
 
     def role(self) -> str:
-        role = str(self.settings().get("role") or "both").strip().lower()
-        return role if role in ROLES else "both"
+        role = str(self.settings().get("role") or "local").strip().lower()
+        return role if role in ROLES else "local"
 
     def remote_enabled(self, *_args: Any, **_kw: Any) -> bool:
         return self.role() in ("remote", "both")

@@ -253,7 +253,7 @@ def test_pre_verify_decisions(world):
 
 def test_settings_from_config(tmp_path):
     s = remote.RemoteSettings.from_config({"remote_git": "/g", "role": "weird"}, tmp_path)
-    assert s.role == "both" and s.workspace == tmp_path / "work" and ["pytest"] in s.allowed_checks
+    assert s.role == "local" and s.workspace == tmp_path / "work" and ["pytest"] in s.allowed_checks
     assert s.check_timeout_s == 900
 
 

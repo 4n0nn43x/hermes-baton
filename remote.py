@@ -50,7 +50,7 @@ class RemoteSettings:
     workspace: Path
     allowed_checks: list = field(default_factory=lambda: [list(a) for a in DEFAULT_ALLOWED_CHECKS])
     check_timeout_s: int = 900
-    role: str = "both"
+    role: str = "local"
     net_timeout_s: int = 120
     sandbox: str = "auto"  # "auto": bubblewrap when it works here; "off": never
 
@@ -60,13 +60,13 @@ class RemoteSettings:
         allowed = cfg.get("allowed_checks")
         if not (isinstance(allowed, list) and all(isinstance(a, list) and a for a in allowed)):
             allowed = [list(a) for a in DEFAULT_ALLOWED_CHECKS]
-        role = str(cfg.get("role") or "both")
+        role = str(cfg.get("role") or "local")
         return cls(
             remote_git=str(cfg.get("remote_git") or ""),
             workspace=Path(cfg.get("workspace") or Path(data_dir) / "work"),
             allowed_checks=[[str(x) for x in a] for a in allowed],
             check_timeout_s=int(cfg.get("check_timeout_s") or 900),
-            role=role if role in ("local", "remote", "both") else "both",
+            role=role if role in ("local", "remote", "both") else "local",
             sandbox="off" if str(cfg.get("sandbox") or "auto").lower() == "off" else "auto")
 
     @property
